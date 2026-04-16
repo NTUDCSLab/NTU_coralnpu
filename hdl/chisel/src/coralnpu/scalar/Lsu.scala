@@ -193,6 +193,7 @@ class LsuUOp(p: Parameters) extends Bundle {
   val sew = Option.when(p.enableRvv) { UInt(3.W) }
   // How many data registers (per segment if applicable) to operate on.
   val emul_data = Option.when(p.enableRvv) { UInt(3.W) }
+  val emul_data_orig = Option.when(p.enableRvv) { UInt(3.W) }
   val nfields = Option.when(p.enableRvv) { UInt(3.W) }
 
   override def toPrintable: Printable = {
@@ -224,36 +225,42 @@ object LsuUOp {
     if (p.enableRvv) {
       val eew = cmd.elemWidth.get  // From instruction encoding
       val sew = rvvState.get.bits.sew  // From vtype
-      val lmul = rvvState.get.bits.lmul
+      val lmul_eff = rvvState.get.bits.lmul
+      val lmul_orig = rvvState.get.bits.lmul_orig
       // TODO(davidgao): Add checks for illegal LMUL values in the frontend.
-      // Unit-stride, const-stride. Default value applies when eew == sew.
-      val emul_data = MuxUpTo1H(lmul, Seq(
-          // eew == 1/4 sew
-          (eew === "b000".U && sew === "b010".U) -> (lmul - 2.U),
-          // eew == 1/2 sew
-          ((eew === "b000".U && sew === "b001".U) ||
-           (eew === "b101".U && sew === "b010".U)) -> (lmul - 1.U),
-          // eew == 2 sew
-          ((eew === "b101".U && sew === "b000".U) ||
-           (eew === "b110".U && sew === "b001".U)) -> (lmul + 1.U),
-          // eew == 4 sew
-          (eew === "b110".U && sew === "b000".U) -> (lmul + 2.U),
-      ))
+      def lmulToDataEmul(lmul: UInt): UInt = {
+        // Unit-stride, const-stride. Default value applies when eew == sew.
+        val emul_data = MuxUpTo1H(lmul, Seq(
+            // eew == 1/4 sew
+            (eew === "b000".U && sew === "b010".U) -> (lmul - 2.U),
+            // eew == 1/2 sew
+            ((eew === "b000".U && sew === "b001".U) ||
+             (eew === "b101".U && sew === "b010".U)) -> (lmul - 1.U),
+            // eew == 2 sew
+            ((eew === "b101".U && sew === "b000".U) ||
+             (eew === "b110".U && sew === "b001".U)) -> (lmul + 1.U),
+            // eew == 4 sew
+            (eew === "b110".U && sew === "b000".U) -> (lmul + 2.U),
+        ))
+        MuxCase(lmul, Seq(
+            // If mask operation, always make LMUL=1.
+            cmd.isMaskOperation() -> 0.U,
+            // Section 7.9 of RVV Spec: "The nf field encodes how many vector
+            // registers to load and store".
+            cmd.isWholeRegister() -> MuxUpTo1H(0.U, Seq(
+                (cmd.nfields.get === 0.U) -> 0.U,  // NF1 -> LMUL1
+                (cmd.nfields.get === 1.U) -> 1.U,  // NF2 -> LMUL2
+                (cmd.nfields.get === 3.U) -> 2.U,  // NF4 -> LMUL4
+                (cmd.nfields.get === 7.U) -> 3.U,  // NF8 -> LMUL8
+            )),
+            LsuOp.isNonindexedVector(cmd.op) -> emul_data,
+            // default: indexed vector and scalar
+        ))
+      }
+
       result.elemWidth.get := eew
-      result.emul_data.get := MuxCase(lmul, Seq(
-          // If mask operation, always make LMUL=1.
-          cmd.isMaskOperation() -> 0.U,
-          // Section 7.9 of RVV Spec: "The nf field encodes how many vector
-          // registers to load and store".
-          cmd.isWholeRegister() -> MuxUpTo1H(0.U, Seq(
-              (cmd.nfields.get === 0.U) -> 0.U,  // NF1 -> LMUL1
-              (cmd.nfields.get === 1.U) -> 1.U,  // NF2 -> LMUL2
-              (cmd.nfields.get === 3.U) -> 2.U,  // NF4 -> LMUL4
-              (cmd.nfields.get === 7.U) -> 3.U,  // NF8 -> LMUL8
-          )),
-          LsuOp.isNonindexedVector(cmd.op) -> emul_data,
-          // default: indexed vector and scalar
-      ))
+      result.emul_data.get := lmulToDataEmul(lmul_eff)
+      result.emul_data_orig.get := lmulToDataEmul(lmul_orig)
 
       // If mask operation, force fields to zero
       result.nfields.get := MuxUpTo1H(cmd.nfields.get, Seq(
@@ -324,6 +331,7 @@ class LsuVectorLoop extends Bundle {
   val subvector = new LoopingCounter(3.W)
   val segment = new LoopingCounter(4.W)
   val lmul = new LoopingCounter(4.W)
+  val lmul_orig = UInt(4.W)
   // Additional internal states to help drive derived outputs.
   val rdStart = UInt(5.W)
   val rd = UInt(5.W)
@@ -345,14 +353,14 @@ class LsuVectorLoop extends Bundle {
     result.lmul := Mux(segment.isFull(), lmul.next(), lmul)
     result.rd := Mux(segment.isFull(),
                      rdStart + lmul.next().curr,
-                     rd + lmul.max)
+                     rd + lmul_orig)
     result
   }
 
   override def toPrintable: Printable = {
     cf"    subvector: ${subvector.curr} of [0..${subvector.max}]\n" +
     cf"    segment: ${segment.curr} of [0..${segment.max}]\n" +
-    cf"    lmul: ${lmul.curr} of [0..${lmul.max}]\n" +
+    cf"    lmul: ${lmul.curr} of [0..${lmul.max}], orig=${lmul_orig}\n" +
     cf"    rdStart: ${rdStart}\n    rd: ${rd}\n"
   }
 }
@@ -646,6 +654,10 @@ object LsuSlot {
         // Treat fractional EMULs as EMUL=1
         (uop.emul_data.getOrElse(0.U)(2)) -> 0.U(2.W),
       ))
+      val origLmul = MuxCase(uop.emul_data_orig.getOrElse(0.U)(1, 0), Seq(
+        // Treat fractional EMULs as EMUL=1
+        (uop.emul_data_orig.getOrElse(0.U)(2)) -> 0.U(2.W),
+      ))
 
       val nfields = Mux(LsuOp.isVector(uop.op), uop.nfields.get, 0.U)
       // Determine number of rvv2lsu interactions required for one vector for
@@ -684,6 +696,7 @@ object LsuSlot {
               Mux(LsuOp.isVector(uop.op), nfields, 0.U)),
           _.lmul -> LoopingCounter(
               Mux(LsuOp.isVector(uop.op), (1.U(4.W) << effectiveLmul), 0.U)),
+          _.lmul_orig -> (1.U(4.W) << origLmul),
           _.rdStart -> uop.rd,
           _.rd -> uop.rd,
       )
