@@ -240,6 +240,7 @@ def _get_math_result(x: np.array, y: np.array, symbol: str, dtype=None, z=None, 
     raise ValueError(f"Unsupported math symbol: {symbol}")
 
 
+
 async def arithmetic_m1_vanilla_ops_test(dut, dtypes, math_ops: list, num_bytes: int):
     """RVV arithmetic test template.
 
@@ -400,10 +401,9 @@ async def float32_arithmetic_m1_vanilla_ops(dut):
             "fmsub",
             "fnmsub",
             "fsqrt",
-            # Disabled pending RTL fix.
-            # "fsgnj",
-            # "fsgnjn",
-            # "fsgnjx",
+            "fsgnj",
+            "fsgnjn",
+            "fsgnjx",
         ],
         num_bytes=16,
     )
@@ -2040,34 +2040,33 @@ async def float_misc_op(dut):
             True,
             True,
         ),
-        # Disabled pending RTL fix.
-        # (
-        #     "vfsgnj_vf_test.elf",
-        #     FLOAT_SAME_TYPE_TEST_CASES,
-        #     lambda x, y: np.copysign(x, y),
-        #     False,
-        #     True,
-        #     False,
-        # ),
-        # (
-        #     "vfsgnjn_vf_test.elf",
-        #     FLOAT_SAME_TYPE_TEST_CASES,
-        #     lambda x, y: np.copysign(x, -y),
-        #     False,
-        #     True,
-        #     False,
-        # ),
-        # (
-        #     "vfsgnjx_vf_test.elf",
-        #     FLOAT_SAME_TYPE_TEST_CASES,
-        #     lambda x, y: (
-        #         x.view(np.uint32)
-        #         ^ (np.array([y], dtype=np.float32).view(np.uint32) & 0x80000000)
-        #     ).view(np.float32),
-        #     False,
-        #     True,
-        #     False,
-        # ),
+        (
+            "vfsgnj_vf_test.elf",
+            FLOAT_SAME_TYPE_TEST_CASES,
+            lambda x, y: np.copysign(x, y),
+            False,
+            True,
+            False,
+        ),
+        (
+            "vfsgnjn_vf_test.elf",
+            FLOAT_SAME_TYPE_TEST_CASES,
+            lambda x, y: np.copysign(x, -y),
+            False,
+            True,
+            False,
+        ),
+        (
+            "vfsgnjx_vf_test.elf",
+            FLOAT_SAME_TYPE_TEST_CASES,
+            lambda x, y: (
+                x.view(np.uint32)
+                ^ (np.array([y], dtype=np.float32).view(np.uint32) & 0x80000000)
+            ).view(np.float32),
+            False,
+            True,
+            False,
+        ),
         (
             "vfmerge_vfm_test.elf",
             FLOAT_SAME_TYPE_TEST_CASES,
