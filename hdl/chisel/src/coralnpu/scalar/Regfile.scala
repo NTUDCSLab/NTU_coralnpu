@@ -41,7 +41,6 @@ class RegfileReadSetIO extends Bundle {
 
 class RegfileBusAddrIO extends Bundle {
   val valid = Input(Bool())
-  val bypass = Input(Bool())
   val immen = Input(Bool())
   val immed = Input(UInt(32.W))
 }
@@ -190,9 +189,8 @@ class Regfile(p: Parameters) extends Module {
   val busValid = Cat((0 until p.instructionLanes).reverse.map(x => io.busAddr(x).valid))
 
   for (i <- 0 until p.instructionLanes) {
-    busAddr(i) := Mux(io.busAddr(i).bypass, rwdata(2 * i),
-                  Mux(io.busAddr(i).immen, rdata(2 * i) + io.busAddr(i).immed,
-                      rdata(2 * i)))
+    busAddr(i) := Mux(io.busAddr(i).immen, rdata(2 * i) + io.busAddr(i).immed,
+                      rdata(2 * i))
   }
 
   for (i <- 0 until p.instructionLanes) {
