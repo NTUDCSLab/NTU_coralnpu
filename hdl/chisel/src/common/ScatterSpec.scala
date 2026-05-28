@@ -1,4 +1,4 @@
-// Copyright 2025 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,16 +19,6 @@ import chisel3.simulator.scalatest.ChiselSim
 import chisel3.util._
 import org.scalatest.freespec.AnyFreeSpec
 import scala.util.Random
-
-class GatherTester extends Module {
-  val io = IO(new Bundle {
-    val indices  = Input(Vec(16, UInt(4.W)))
-    val data  = Input(Vec(16, UInt(8.W)))
-    val out = Output(Vec(16, UInt(8.W)))
-  })
-
-  io.out := Gather(io.indices, io.data)
-}
 
 class ScatterTester extends Module {
   val io = IO(new Bundle {
@@ -52,27 +42,6 @@ class ScatterTester extends Module {
   io.maskCount := PopCount(writeMask)
 }
 
-class GatherSpec extends AnyFreeSpec with ChiselSim {
-  "Random Test" in {
-    simulate(new GatherTester) { dut =>
-      for (_ <- 0 until 100) {
-        // Set inputs
-        val indices = Seq.fill(16)(Random.between(0, 16))
-        val data = Seq.fill(16)(Random.between(0, 256))
-        for (i <- 0 until 16) {
-          dut.io.indices(i).poke(indices(i))
-          dut.io.data(i).poke(data(i))
-        }
-
-        // Check results
-        for (i <- 0 until 16) {
-          dut.io.out(i).expect(data(indices(i)))
-        }
-      }
-    }
-  }
-}
-
 class ScatterSpec extends AnyFreeSpec with ChiselSim {
   "Random Test" in {
     simulate(new ScatterTester) { dut =>
@@ -85,7 +54,6 @@ class ScatterSpec extends AnyFreeSpec with ChiselSim {
           dut.io.indices(i).poke(indices(i))
           dut.io.data(i).poke(data(i))
           dut.io.indicesValid(i).poke(valid(i))
-
         }
 
         // Check results

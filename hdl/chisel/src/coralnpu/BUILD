@@ -48,10 +48,23 @@ chisel_library(
 )
 
 chisel_test(
-    name = "coralnpu_float_tests",
-    size = "medium",
+    name = "coralnpu_fregfile_tests",
+    size = "large",
     srcs = [
         "scalar/FRegfileTest.scala",
+    ],
+    deps = [
+        ":coralnpu",
+        ":coralnpu_base",
+        ":coralnpu_float",
+        "//hdl/chisel/src/common:fp",
+    ],
+)
+
+chisel_test(
+    name = "coralnpu_fpu_tests",
+    size = "large",
+    srcs = [
         "scalar/FpuTest.scala",
     ],
     deps = [
@@ -197,14 +210,10 @@ chisel_test(
 )
 
 chisel_test(
-    name = "coralnpu_scalar_tests",
+    name = "coralnpu_alu_tests",
     size = "large",
     srcs = [
         "scalar/AluTest.scala",
-        "scalar/MluTest.scala",
-    ],
-    args = [
-        "-P",  # Allows parallel tests.
     ],
     deps = [
         ":coralnpu_base",
@@ -214,10 +223,23 @@ chisel_test(
 )
 
 chisel_test(
-    name = "coralnpu_uncached_fetch_tests",
+    name = "coralnpu_mlu_tests",
     size = "large",
     srcs = [
-        "scalar/UncachedFetchTest.scala",
+        "scalar/MluTest.scala",
+    ],
+    deps = [
+        ":coralnpu_base",
+        ":coralnpu_scalar",
+        "//hdl/chisel/src/common:testing",
+    ],
+)
+
+chisel_test(
+    name = "coralnpu_fetch_reorder_buffer_tests",
+    size = "large",
+    srcs = [
+        "scalar/FetchReorderBufferSpec.scala",
     ],
     deps = [
         ":coralnpu_base",
@@ -228,12 +250,74 @@ chisel_test(
 )
 
 chisel_test(
-    name = "coralnpu_core_axi_tests",
+    name = "coralnpu_fetch_control_tests",
     size = "large",
     srcs = [
+        "scalar/FetchControlSpec.scala",
+    ],
+    deps = [
+        ":coralnpu_base",
+        ":coralnpu_scalar",
+        "//hdl/chisel/src/common",
+        "//hdl/chisel/src/common:instruction_buffer",
+    ],
+)
+
+chisel_test(
+    name = "coralnpu_fetcher_tests",
+    srcs = [
+        "scalar/FetcherSpec.scala",
+    ],
+    deps = [
+        ":coralnpu_base",
+        ":coralnpu_scalar",
+        "//hdl/chisel/src/common",
+        "//hdl/chisel/src/common:instruction_buffer",
+    ],
+)
+
+chisel_test(
+    name = "coralnpu_core_axi_csr_tests",
+    srcs = [
         "CoreAxiCSRTest.scala",
+    ],
+    deps = [
+        ":coralnpu",
+        ":coralnpu_base",
+        "//hdl/chisel/src/bus",
+    ],
+)
+
+chisel_test(
+    name = "coralnpu_dbus2axi_tests",
+    srcs = [
         "DBus2AxiTest.scala",
-        "FabricTest.scala",
+    ],
+    deps = [
+        ":coralnpu",
+        ":coralnpu_base",
+        "//hdl/chisel/src/bus",
+    ],
+)
+
+chisel_test(
+    name = "coralnpu_fabric_arbiter_tests",
+    size = "large",
+    srcs = [
+        "FabricArbiterSpec.scala",
+    ],
+    deps = [
+        ":coralnpu",
+        ":coralnpu_base",
+        "//hdl/chisel/src/bus",
+    ],
+)
+
+chisel_test(
+    name = "coralnpu_fabric_mux_tests",
+    size = "large",
+    srcs = [
+        "FabricMuxSpec.scala",
     ],
     deps = [
         ":coralnpu",

@@ -231,6 +231,7 @@ verilator_cocotb_model(
 
 chisel_test(
     name = "spi_master_test",
+    size = "large",
     srcs = [
         "SpiMasterTest.scala",
         "TLULTestUtils.scala",
@@ -257,6 +258,7 @@ chisel_test(
 
 chisel_test(
     name = "dma_engine_test",
+    size = "large",
     srcs = ["DmaEngineTest.scala"],
     deps = [
         ":bus",
@@ -267,6 +269,7 @@ chisel_test(
 
 chisel_test(
     name = "spi2tlulv2_test",
+    size = "large",
     srcs = ["Spi2TLULV2Test.scala"],
     deps = [
         ":bus",

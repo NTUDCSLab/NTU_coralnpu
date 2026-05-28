@@ -174,6 +174,7 @@ chisel_test(
 
 chisel_test(
     name = "circular_buffer_multi_test",
+    size = "large",
     srcs = [
         "CircularBufferMultiTest.scala",
     ],
@@ -184,6 +185,7 @@ chisel_test(
 
 chisel_test(
     name = "library_test",
+    size = "large",
     srcs = [
         "LibraryTest.scala",
     ],
@@ -193,10 +195,21 @@ chisel_test(
 )
 
 chisel_test(
-    name = "scatter_gather_test",
+    name = "gather_test",
     size = "large",
     srcs = [
-        "ScatterGatherTest.scala",
+        "GatherSpec.scala",
+    ],
+    deps = [
+        ":scatter_gather",
+    ],
+)
+
+chisel_test(
+    name = "scatter_test",
+    size = "large",
+    srcs = [
+        "ScatterSpec.scala",
     ],
     deps = [
         ":scatter_gather",
@@ -278,6 +291,7 @@ chisel_library(
 
 chisel_test(
     name = "fifo_state_test",
+    size = "large",
     srcs = [
         "FIFOStateTest.scala",
     ],
