@@ -1,6 +1,7 @@
 package coralnpu.soc
 
-import coralnpu.{MemoryRegion, MemoryRegions, Parameters, MemorySize}
+import chisel3.Data
+import coralnpu.{MemoryRegion, MemoryRegions, Parameters, MemorySize, DmReqOp, DmRspOp}
 
 // --- External Port Definitions ---
 
@@ -14,6 +15,7 @@ sealed trait PortType
 case object Clk extends PortType
 case object Bool extends PortType
 case class Logic(width: Int) extends PortType
+case class Custom(gen: () => Data) extends PortType
 
 /**
  * Defines a non-TileLink port to be exposed at the subsystem boundary.
@@ -149,11 +151,11 @@ class SoCChiselConfig(itcmSize: MemorySize, dtcmSize: MemorySize) {
         ExternalPort("dm_req_ready", Bool, Out, "io.dm.req.ready"),
         ExternalPort("dm_req_bits_address", Logic(32), In, "io.dm.req.bits.address"),
         ExternalPort("dm_req_bits_data", Logic(32), In, "io.dm.req.bits.data"),
-        ExternalPort("dm_req_bits_op", Logic(2), In, "io.dm.req.bits.op"),
+        ExternalPort("dm_req_bits_op", Custom(() => DmReqOp()), In, "io.dm.req.bits.op"),
         ExternalPort("dm_rsp_valid", Bool, Out, "io.dm.rsp.valid"),
         ExternalPort("dm_rsp_ready", Bool, In, "io.dm.rsp.ready"),
         ExternalPort("dm_rsp_bits_data", Logic(32), Out, "io.dm.rsp.bits.data"),
-        ExternalPort("dm_rsp_bits_op", Logic(2), Out, "io.dm.rsp.bits.op"),
+        ExternalPort("dm_rsp_bits_op", Custom(() => DmRspOp()), Out, "io.dm.rsp.bits.op"),
       )
     ),
     ChiselModuleConfig(

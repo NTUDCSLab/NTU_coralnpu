@@ -39,7 +39,7 @@ diff --git a/verilator/defs.bzl b/verilator/defs.bzl
 index fc8af53..2a77d50 100644
 --- a/verilator/defs.bzl
 +++ b/verilator/defs.bzl
-@@ -47,7 +47,12 @@ def cc_compile_and_link_static_library(ctx, srcs, hdrs, deps, runfiles, includes
+@@ -47,7 +47,14 @@ def cc_compile_and_link_static_library(ctx, srcs, hdrs, deps, runfiles, includes
          actions = ctx.actions,
          feature_configuration = feature_configuration,
          cc_toolchain = cc_toolchain,
@@ -49,6 +49,8 @@ index fc8af53..2a77d50 100644
 +            "-Wno-unused-variable",
 +            "-Wno-unused-parameter",
 +            "-Wno-unused-but-set-variable",
++            "-Wno-bool-operation",
++            "-Wno-tautological-compare",
 +        ],
          srcs = srcs,
          includes = includes,

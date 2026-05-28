@@ -34,6 +34,7 @@ chisel_library(
         "//hdl/chisel/src/bus",
         "//hdl/chisel/src/coralnpu:coralnpu_params",
         "//hdl/chisel/src/coralnpu:srams",
+        "//hdl/chisel/src/coralnpu:coralnpu_scalar",
     ],
 )
 

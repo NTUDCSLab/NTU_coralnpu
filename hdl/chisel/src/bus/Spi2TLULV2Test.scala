@@ -653,7 +653,7 @@ class Spi2TLULV2Spec extends AnyFreeSpec with ChiselSim {
       dc.spiSendHeader(0x01, baseAddr, 0x0001) // 2-beat read
 
       // Wait for TL-A to fire
-      val captured = dc.waitTlACapture(2, 1000)
+      dc.waitTlACapture(2, 1000)
 
       // Wait for 0xFE bit-by-bit to align with the stream
       var rxBuf = 0

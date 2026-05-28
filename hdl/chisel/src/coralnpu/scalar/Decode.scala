@@ -532,7 +532,7 @@ class DispatchV2(p: Parameters) extends Dispatch(p) {
 
     // -------------------------------------------------------------------------
     // Alu
-    val alu = MuxUpTo1H(MakeValid(false.B, AluOp.ADD), Seq(
+    val alu = SafeMuxUpTo1H(MakeValid(false.B, AluOp.ADD), Seq(
         // RV32IM
         (d.auipc || d.addi || d.add) -> MakeValid(true.B, AluOp.ADD),
         d.sub                        -> MakeValid(true.B, AluOp.SUB),
@@ -564,14 +564,14 @@ class DispatchV2(p: Parameters) extends Dispatch(p) {
         d.rev8                       -> MakeValid(true.B, AluOp.REV8),
         d.zexth                      -> MakeValid(true.B, AluOp.ZEXTH),
         d.rori                       -> MakeValid(true.B, AluOp.ROR),
-    ))
+    ), AluOp)
     io.alu(i).valid := tryDispatch && alu.valid
     io.alu(i).bits.addr := rdAddr(i)
     io.alu(i).bits.op := alu.bits
 
     // -------------------------------------------------------------------------
     // Bru
-    val bru = MuxUpTo1H(MakeValid(false.B, BruOp.JAL), Seq(
+    val bru = SafeMuxUpTo1H(MakeValid(false.B, BruOp.JAL), Seq(
         d.jal    -> MakeValid(true.B, BruOp.JAL),
         d.jalr   -> MakeValid(true.B, BruOp.JALR),
         d.beq    -> MakeValid(true.B, BruOp.BEQ),
@@ -585,7 +585,7 @@ class DispatchV2(p: Parameters) extends Dispatch(p) {
         d.mpause -> MakeValid(true.B, BruOp.MPAUSE),
         d.mret   -> MakeValid(true.B, BruOp.MRET),
         d.wfi    -> MakeValid(true.B, BruOp.WFI),
-    ))
+    ), BruOp)
     val bru_target = io.inst(i).bits.addr + Mux(
         io.inst(i).bits.inst(2), d.immjal, d.immbr)
     io.bru(i).bits.fwd := io.inst(i).bits.brchFwd
@@ -609,31 +609,31 @@ class DispatchV2(p: Parameters) extends Dispatch(p) {
 
     // -------------------------------------------------------------------------
     // Mlu
-    val mlu = MuxUpTo1H(MakeValid(false.B, MluOp.MUL), Seq(
+    val mlu = SafeMuxUpTo1H(MakeValid(false.B, MluOp.MUL), Seq(
       d.mul     -> MakeValid(true.B, MluOp.MUL),
       d.mulh    -> MakeValid(true.B, MluOp.MULH),
       d.mulhsu  -> MakeValid(true.B, MluOp.MULHSU),
       d.mulhu   -> MakeValid(true.B, MluOp.MULHU),
-    ))
+    ), MluOp)
     io.mlu(i).valid := tryDispatch && mlu.valid
     io.mlu(i).bits.addr := rdAddr(i)
     io.mlu(i).bits.op := mlu.bits
 
     // -------------------------------------------------------------------------
     // Dvu
-    val dvu = MuxUpTo1H(MakeValid(false.B, DvuOp.DIV), Seq(
+    val dvu = SafeMuxUpTo1H(MakeValid(false.B, DvuOp.DIV), Seq(
       d.div  -> MakeValid(true.B, DvuOp.DIV),
       d.divu -> MakeValid(true.B, DvuOp.DIVU),
       d.rem  -> MakeValid(true.B, DvuOp.REM),
       d.remu -> MakeValid(true.B, DvuOp.REMU)
-    ))
+    ), DvuOp)
     io.dvu(i).valid := tryDispatch && dvu.valid
     io.dvu(i).bits.addr := rdAddr(i)
     io.dvu(i).bits.op := dvu.bits
 
     // -------------------------------------------------------------------------
     // Lsu
-    val lsu = MuxUpTo1H(MakeValid(false.B, LsuOp.LB), Seq(
+    val lsu = SafeMuxUpTo1H(MakeValid(false.B, LsuOp.LB), Seq(
       d.lb             -> MakeValid(true.B, LsuOp.LB),
       d.lh             -> MakeValid(true.B, LsuOp.LH),
       d.lw             -> MakeValid(true.B, LsuOp.LW),
@@ -663,7 +663,7 @@ class DispatchV2(p: Parameters) extends Dispatch(p) {
         (isRvvStore && (mop === RvvAddressingMode.STRIDED))           -> MakeValid(true.B, LsuOp.VSTORE_STRIDED),
         (isRvvStore && (mop === RvvAddressingMode.INDEXED_ORDERED))   -> MakeValid(true.B, LsuOp.VSTORE_OINDEXED),
       )
-    }.getOrElse(Seq()))
+    }.getOrElse(Seq()), LsuOp)
     io.lsu(i).valid := tryDispatch && lsu.valid
     io.lsu(i).bits.store := io.inst(i).bits.inst(5)
     io.lsu(i).bits.addr := rdAddr(i)
@@ -678,11 +678,11 @@ class DispatchV2(p: Parameters) extends Dispatch(p) {
     // -------------------------------------------------------------------------
     // Csr
     if (i == 0) {
-      val csr = MuxUpTo1H(MakeValid(false.B, CsrOp.CSRRW), Seq(
+      val csr = SafeMuxUpTo1H(MakeValid(false.B, CsrOp.CSRRW), Seq(
         d.csrrw -> MakeValid(true.B, CsrOp.CSRRW),
         d.csrrs -> MakeValid(true.B, CsrOp.CSRRS),
         d.csrrc -> MakeValid(true.B, CsrOp.CSRRC)
-      ))
+      ), CsrOp)
       val csr_bits_index = io.inst(0).bits.inst(31,20)
       val (csr_address, csr_address_valid) = CsrAddress.safe(csr_bits_index)
       // Stall reads of vxsat (0x009) and vcsr (0x00F) until the vector unit is

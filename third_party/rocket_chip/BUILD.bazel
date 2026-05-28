@@ -29,4 +29,5 @@ chisel_library(
         "@chipsalliance_rocket_chip//:src/main/scala/util/package.scala",
     ],
     allow_warnings = True,
+    scalacopts = ["-nowarn"],
 )

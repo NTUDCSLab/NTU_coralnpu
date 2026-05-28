@@ -57,6 +57,7 @@ class CoralNPUChiselSubsystemIO(val hostParams: Seq[bus.TLULParameters], val dev
       case coralnpu.soc.Clk  => Clock()
       case coralnpu.soc.Bool => Bool()
       case coralnpu.soc.Logic(width) => UInt(width.W)
+      case coralnpu.soc.Custom(gen)  => gen()
     }
     p.name -> (if (p.direction == coralnpu.soc.In) Input(port) else Output(port))
   })
@@ -236,7 +237,13 @@ class CoralNPUChiselSubsystem(val hostParams: Seq[bus.TLULParameters], val devic
         extPort =>
         val moduleIo = modulePorts(s"${config.name}.${extPort.modulePort}")
         val topIo = io.external_ports(extPort.name)
-        if (extPort.direction == In) moduleIo := topIo.asTypeOf(chiselTypeOf(moduleIo)) else topIo := moduleIo.asTypeOf(chiselTypeOf(topIo))
+        if (extPort.direction == In) {
+          if (topIo.getClass == moduleIo.getClass) moduleIo := topIo
+          else moduleIo := topIo.asTypeOf(chiselTypeOf(moduleIo))
+        } else {
+          if (topIo.getClass == moduleIo.getClass) topIo := moduleIo
+          else topIo := moduleIo.asTypeOf(chiselTypeOf(topIo))
+        }
       }
     }
 

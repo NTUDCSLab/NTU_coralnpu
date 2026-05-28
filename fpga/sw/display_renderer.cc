@@ -178,7 +178,7 @@ void DisplayRenderer::Render(const uint16_t* frame_buffer) {
 }
 
 void DisplayRenderer::WaitDma() {
-  uint32_t dma_base = dma_get_base_addr();
+  uintptr_t dma_base = dma_get_base_addr();
   int timeout = 0;
   while (dma_get_status() & 0x1) {
     uint32_t s = dma_get_status();

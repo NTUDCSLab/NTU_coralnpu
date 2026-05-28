@@ -248,6 +248,28 @@ object MuxUpTo1H {
   }
 }
 
+object SafeMuxUpTo1H {
+  def apply[E <: Data](
+      defaultVal: ValidIO[E],
+      sel: Seq[Bool],
+      data: Seq[ValidIO[E]],
+      enumObj: ChiselEnum { type Type = E }
+  ): ValidIO[E] = {
+    val valid = MuxUpTo1H(defaultVal.valid, sel, data.map(_.valid))
+    val bitsUInt = MuxUpTo1H(defaultVal.bits.asUInt, sel, data.map(_.bits.asUInt))
+    val bits = enumObj.safe(bitsUInt)._1
+    MakeValid(valid, bits.asInstanceOf[E])
+  }
+
+  def apply[E <: Data](
+      defaultVal: ValidIO[E],
+      sel: Seq[(Bool, ValidIO[E])],
+      enumObj: ChiselEnum { type Type = E }
+  ): ValidIO[E] = {
+    apply(defaultVal, sel.map(_._1), sel.map(_._2), enumObj)
+  }
+}
+
 object IrrevocableChecker {
   def apply[T <: Data](x: IrrevocableIO[T]): IrrevocableIO[T] = {
     val prevPending = RegNext(x.valid && !x.ready, false.B)

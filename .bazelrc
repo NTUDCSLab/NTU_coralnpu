@@ -12,7 +12,13 @@ build --copt=-Wno-unused-function
 build --host_copt=-Wno-unused-variable
 build --host_copt=-Wno-unused-value
 build --host_copt=-Wno-uninitialized
+build --host_copt=-Wno-sign-compare
 build --host_copt=-O3
+
+# Disable Java obsolete options and bad path warnings
+build --javacopt="-nowarn"
+build --host_javacopt="-nowarn"
+
 
 # This lets us generate key/value pairs for the workspace which can be used to
 # generate the version information.
@@ -89,6 +95,10 @@ build --linkopt=-fuse-ld=bfd
 # Disable LLD-specific "start-lib" optimization (incompatible with BFD)
 build --host_features=-supports_start_end_lib
 build --features=-supports_start_end_lib
+
+# Only show warnings/errors from our own code
+build --output_filter="^//(?!(third_party)(/|:|$))"
+
 
 # Import user config, if it exists (gitignored).
 try-import %workspace%/.bazelrc.user

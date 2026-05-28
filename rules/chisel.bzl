@@ -39,7 +39,8 @@ def chisel_library(
         resources = [],
         resource_strip_prefix = "",
         visibility = None,
-        allow_warnings = False):
+        allow_warnings = False,
+        scalacopts = []):
     warn_opts = []
     if not allow_warnings:
         warn_opts += ["-Xfatal-warnings"]
@@ -53,7 +54,7 @@ def chisel_library(
         resources = resources,
         resource_strip_prefix = resource_strip_prefix,
         exports = exports,
-        scalacopts = SCALA_COPTS + warn_opts,
+        scalacopts = SCALA_COPTS + warn_opts + scalacopts,
         visibility = visibility,
     )
 
