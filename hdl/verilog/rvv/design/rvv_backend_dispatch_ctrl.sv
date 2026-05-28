@@ -25,8 +25,8 @@ module rvv_backend_dispatch_ctrl
     rs_valid_dp2div,
     rs_ready_div2dp,
   `ifdef ZVE32F_ON
-    rs_valid_dp2fma,
-    rs_ready_fma2dp,
+    rs_valid_dp2falu,
+    rs_ready_falu2dp,
   `endif
     rs_valid_dp2lsu,
     rs_ready_lsu2dp,
@@ -54,8 +54,8 @@ module rvv_backend_dispatch_ctrl
     output  logic         [`NUM_DP_UOP-1:0] rs_valid_dp2div;
     input   logic         [`NUM_DP_UOP-1:0] rs_ready_div2dp;
   `ifdef ZVE32F_ON
-    output  logic         [`NUM_DP_UOP-1:0] rs_valid_dp2fma;
-    input   logic         [`NUM_DP_UOP-1:0] rs_ready_fma2dp;
+    output  logic         [`NUM_DP_UOP-1:0] rs_valid_dp2falu;
+    input   logic         [`NUM_DP_UOP-1:0] rs_ready_falu2dp;
   `endif
     output  logic         [`NUM_DP_UOP-1:0] rs_valid_dp2lsu;
     input   logic         [`NUM_DP_UOP-1:0] rs_ready_lsu2dp;
@@ -123,7 +123,7 @@ module rvv_backend_dispatch_ctrl
                     FCMP,
                     FMA,
                     FCVT,
-                    FTBL:rs_ready[0] = rs_ready_fma2dp[0];
+                    FTBL:rs_ready[0] = rs_ready_falu2dp[0];
                     FDIV,
                   `endif
                     DIV: rs_ready[0] = rs_ready_div2dp[0];
@@ -148,7 +148,7 @@ module rvv_backend_dispatch_ctrl
                     FNCMP,
                     FCMP,
                     FMA,
-                    FCVT:rs_ready[i] = rs_ready[i-1] & rs_ready_fma2dp[i];
+                    FCVT:rs_ready[i] = rs_ready[i-1] & rs_ready_falu2dp[i];
                     FDIV,
                   `endif
                     DIV: rs_ready[i] = rs_ready[i-1] & rs_ready_div2dp[i];
@@ -180,7 +180,7 @@ module rvv_backend_dispatch_ctrl
                                              (uop_ctrl[i].uop_exe_unit == MUL || 
                                               uop_ctrl[i].uop_exe_unit == MAC );
           `ifdef ZVE32F_ON
-            assign rs_valid_dp2fma[i]      = uop_ready_dp2uop[i] & 
+            assign rs_valid_dp2falu[i]     = uop_ready_dp2uop[i] & 
                                              ((uop_ctrl[i].uop_exe_unit == FMA)  ||
                                               (uop_ctrl[i].uop_exe_unit == FNCMP)||
                                               (uop_ctrl[i].uop_exe_unit == FCMP) ||

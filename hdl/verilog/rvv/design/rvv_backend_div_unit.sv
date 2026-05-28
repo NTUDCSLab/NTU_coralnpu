@@ -79,7 +79,11 @@ module rvv_backend_div_unit
   logic   [`VLENW-1:0]                      result_valid32;
   logic   [`VLEN-1:0]                       result_data; 
   logic                                     result_all_valid; 
-  DIV_SIGN_SRC_e                            opcode;
+
+  // opcode
+  logic                                     opcode;
+  localparam                                DIV_SIGN=0;
+  localparam                                DIV_ZERO=1;
 
   // for-loop
   genvar                                                j;
@@ -317,7 +321,7 @@ module rvv_backend_div_unit
 
   edff #(
     .T      (DIV_RES_t),
-    .INIT   ('0)
+    .INIT   (($bits(DIV_RES_t))'({'0,EEW_NONE}))
   ) res_information
   (
     .clk    (clk),
@@ -329,7 +333,7 @@ module rvv_backend_div_unit
 
   generate
     for(j=0;j<`VLENB/2;j++) begin: DIVIDER8
-      rvv_backend_div_unit_divider
+      intdivider
       #(
         .DIV_WIDTH          (8'd`BYTE_WIDTH)
       )
@@ -353,7 +357,7 @@ module rvv_backend_div_unit
 
   generate
     for(j=0;j<`VLENH/2;j++) begin: DIVIDER16
-      rvv_backend_div_unit_divider
+      intdivider
       #(
         .DIV_WIDTH          (8'd`HWORD_WIDTH)
       )
@@ -377,7 +381,7 @@ module rvv_backend_div_unit
 
   generate
     for(j=0;j<`VLENW;j++) begin: DIVIDER32
-      rvv_backend_div_unit_divider
+      intdivider
       #(
         .DIV_WIDTH          (8'd`WORD_WIDTH)
       )

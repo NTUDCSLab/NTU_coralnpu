@@ -26,6 +26,11 @@ module rvv_backend_retire(
   rt2fcsr_write_data,
   fcsr2rt_write_ready
 `endif
+`ifdef TB_SUPPORT
+  ,vrf_data,
+  rt2rvvi_valid,
+  rt2rvvi_data
+`endif
 );
 // ROB dataout
     input   logic    [`NUM_RT_UOP-1:0]            rob2rt_write_valid;
@@ -62,6 +67,13 @@ module rvv_backend_retire(
     output  logic                                 rt2fcsr_write_valid;
     output  RVFEXP_t                              rt2fcsr_write_data;
     input   logic                                 fcsr2rt_write_ready;
+`endif
+
+`ifdef TB_SUPPORT
+// Retire information for RVVI.
+    input   logic    [`NUM_DP_VRF-1:0][`VLEN-1:0] vrf_data;
+    output  logic    [`NUM_RT_UOP-1:0]            rt2rvvi_valid; // always ready to receive.
+    output  ROB2RT_t [`NUM_RT_UOP-1:0]            rt2rvvi_data;  
 `endif
 
 ////////////Wires & Regs  ///////////////
@@ -162,8 +174,8 @@ generate
   end
 
 // VRF WAW
-  assign vrfres[0]         = w_data[0];
-  assign vrfres_strobe[0]  = w_strobe[0];
+  assign vrfres[0]        = w_data[0];
+  assign vrfres_strobe[0] = w_strobe[0];
 
   for(j=1;j<`NUM_RT_UOP;j++) begin: process_waw
     rvv_backend_retire_waw #(
@@ -252,7 +264,7 @@ generate
 
   for(j=0;j<`NUM_RT_UOP;j++) begin : gen_rt2vrf_write
     always_comb begin
-      if(w_vrf[j]&rt2rob_write_ready[j]&(!hit_waw[j])) begin
+      if(vrfres_valid[j]) begin
         rt2vrf_write_valid[j]           = 1'b1; 
 
         `ifdef TB_SUPPORT
@@ -297,5 +309,26 @@ generate
     end
   end
 endgenerate
+
+`ifdef TB_SUPPORT
+// retire infomation for RVVI
+  assign rt2rvvi_valid = rob2rt_write_valid&rt2rob_write_ready;
+
+  always_comb begin
+    for(int j=0;j<`NUM_RT_UOP;j++) begin
+      rt2rvvi_data[j]         = rob2rt_write_data[j];
+      rt2rvvi_data[j].w_valid = rob2rt_write_data[j].w_valid&rt2rvvi_valid[j];  // coral.scalar core use w_valid instead of rt2rvvi_valid
+
+      if(rob2rt_write_data[j].w_type==VRF) begin
+        for(int i=0;i<`VLENB;i++) begin
+          rt2rvvi_data[j].vd_type                             = {`VLENB{BODY_ACTIVE}};
+          rt2rvvi_data[j].w_data[i*`BYTE_WIDTH+:`BYTE_WIDTH]  = vrfres_strobe[i] 
+                                                                ? vrfres[j][i*`BYTE_WIDTH+:`BYTE_WIDTH] 
+                                                                : vrf_data[rob2rt_write_data[j].w_index][i*`BYTE_WIDTH+:`BYTE_WIDTH];
+        end
+      end
+    end
+  end
+`endif
 
 endmodule

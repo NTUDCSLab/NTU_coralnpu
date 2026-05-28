@@ -88,7 +88,7 @@ module rvv_backend_div
     `ifdef ZVE32F_ON
       assign fp_uop_vld[i] = uop_valid[i] & !uop[i].is_div; 
 
-      rvv_backend_fdiv_wrapper u_fdiv_unit
+      rvv_backend_fdiv_unit u_fdiv_unit
         (
           .clk            (clk),
           .rst_n          (rst_n),
