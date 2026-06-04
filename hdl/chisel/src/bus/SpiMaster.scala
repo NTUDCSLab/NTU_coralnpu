@@ -108,14 +108,16 @@ class SpiMasterCtrl(p: Parameters) extends Module {
   val manual_cs_val = !reg_csid(0) // CS0 selected if bit 0 set
 
   val phase = RegInit(0.U(1.W)) // Half-cycle phase indicator
+  val sample_count = RegInit(0.U(4.W)) // Number of bits sampled
 
   // Reset and Enable management
   when(!ctrl_enable) {
-    state     := SpiState.sIdle
-    sclk_reg  := ctrl_cpol
-    csb_reg   := true.B
-    clk_count := 0.U
-    phase     := 0.U
+    state        := SpiState.sIdle
+    sclk_reg     := ctrl_cpol
+    csb_reg      := true.B
+    clk_count    := 0.U
+    phase        := 0.U
+    sample_count := 0.U
   }.otherwise {
     when(manual_cs) {
       csb_reg := manual_cs_val
@@ -126,8 +128,9 @@ class SpiMasterCtrl(p: Parameters) extends Module {
       is(SpiState.sIdle) {
         sclk_reg := ctrl_cpol
         when(!manual_cs) { csb_reg := true.B }
-        phase     := 0.U
-        clk_count := 0.U
+        phase        := 0.U
+        clk_count    := 0.U
+        sample_count := 0.U
         when(tx_fifo.io.deq.valid) {
           // Normal mode: dequeue from TX FIFO
           tx_fifo.io.deq.ready := true.B
@@ -151,6 +154,7 @@ class SpiMasterCtrl(p: Parameters) extends Module {
         when(tick) {
           state    := SpiState.sShift
           sclk_reg := !ctrl_cpol
+          phase    := ~phase
         }
       }
 
@@ -158,7 +162,7 @@ class SpiMasterCtrl(p: Parameters) extends Module {
         // Shift data bits and drive SCLK
         when(tick) {
           phase := ~phase
-          when(phase === 0.U) {
+          when(phase === 1.U) {
             // End of Leading edge phase, Start of Trailing edge phase
             sclk_reg := ctrl_cpol
           }.otherwise {
@@ -201,14 +205,16 @@ class SpiMasterCtrl(p: Parameters) extends Module {
     when(state === SpiState.sShift || state === SpiState.sSetup) {
       // Sampling Edge: CPHA=0 -> Leading edge (phase=0), CPHA=1 -> Trailing edge (phase=1)
       when(phase === ctrl_cpha) {
-        rx_reg := Cat(rx_reg(6, 0), io.spi.miso)
+        when(sample_count < 8.U) {
+          rx_reg       := Cat(rx_reg(6, 0), io.spi.miso)
+          sample_count := sample_count + 1.U
+        }
       }
 
       // Shifting Edge: CPHA=0 -> Trailing edge (phase=1), CPHA=1 -> Leading edge (phase=0)
       // Special case: for CPHA=1, we don't shift on the very first leading edge (in sSetup or start of sShift).
       when(phase === !ctrl_cpha) {
-        val is_first_leading =
-          (state === SpiState.sSetup || (state === SpiState.sShift && bit_count === 7.U && phase === 0.U))
+        val is_first_leading = state === SpiState.sSetup
         when(!(ctrl_cpha === 1.U && is_first_leading)) {
           tx_reg := Cat(tx_reg(6, 0), 0.U(1.W))
         }
