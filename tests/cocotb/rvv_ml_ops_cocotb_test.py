@@ -37,7 +37,6 @@ def log_matmul_metrics(dut, test_name: str, cycles: int, lhs_rows: int,
 @cocotb.test()
 async def core_mini_rvv_matmul_c_test(dut):
     """Test integer matmul with RVV C intrinsics."""
-
     fixture = await Fixture.Create(dut)
     r = runfiles.Create()
     elf_file = 'rvv_matmul.elf'

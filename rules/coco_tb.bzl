@@ -22,7 +22,7 @@ load("@rules_cc//cc:find_cc_toolchain.bzl", "find_cc_toolchain")
 load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
 load("@rules_hdl//cocotb:cocotb.bzl", "cocotb_test")
 load("@rules_hdl//verilog:providers.bzl", "VerilogInfo")
-load("@rules_python//python:defs.bzl", "py_library")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 
 # Number of CPUs reserved per Verilate action in Bazel's local scheduler.
 # Sourced from `nproc` at workspace-fetch time so we don't oversubscribe
@@ -30,7 +30,16 @@ load("@rules_python//python:defs.bzl", "py_library")
 # more than one action at a time).
 _verilator_make_parallelism = MAKE_JOBS
 
-def _verilator_resource_estimator(os, input_size):
+VcsSimulationInfo = provider(
+    doc = "Contains outputs of a VCS simulation run",
+    fields = {
+        "log_file": "File: The simulation log file",
+        "status_file": "File: The simulation status file",
+        "fsdb_file": "File: The FSDB waveform file (optional)",
+    },
+)
+
+def _verilator_resource_estimator(_os, input_size):
     # Cap the scheduler reservation at 4 so multiple actions can still run
     # in parallel on larger hosts; the `make -j` inside the action is free
     # to use more threads if the scheduler hands them over.
@@ -238,7 +247,7 @@ def _vcs_cocotb_model_impl(ctx):
     hdl_toplevel = ctx.attr.hdl_toplevel
     outdir_name = ctx.attr.name + "_vcs_build"
 
-    verilog_files = collect_verilog_files(ctx.attr.verilog_sources, ctx.files.verilog_sources).to_list()
+    verilog_files = collect_verilog_files(ctx.attr.verilog_sources).to_list()
 
     output_simv = ctx.actions.declare_file(outdir_name + "/simv")
     output_daidir = ctx.actions.declare_directory(outdir_name + "/simv.daidir")
@@ -511,6 +520,294 @@ def _verilator_cocotb_test_suite(
         **meta_target_kwargs
     )
 
+def _vcs_simulation_run_impl(ctx):
+    log_file = ctx.actions.declare_file(ctx.attr.name + ".log")
+    fsdb_file = ctx.actions.declare_file(ctx.attr.name + ".fsdb")
+    status_file = ctx.actions.declare_file(ctx.attr.name + ".status")
+    # CAVEAT: If code coverage (-cm) is ever enabled for netlist targets,
+    # you MUST also declare <name>.vdb here in outputs and include it in DefaultInfo!
+
+    args = ctx.actions.args()
+    args.add("--sim", "vcs")
+    args.add("--hdl_toplevel_lang", "verilog")
+
+    # CRITICAL: These arguments mirror _get_test_command in @rules_hdl//cocotb:cocotb.bzl.
+    # If standard cocotb tests receive new CLI arguments or flags, they must be added here.
+    args.add("--model", ctx.executable.model.short_path)
+    args.add("--main_workspace", ctx.workspace_name)
+    if ctx.attr.testcase:
+        args.add("--testcase", ctx.attr.testcase)
+
+    # Dynamically resolve runfiles path of test module
+    test_module_file = ctx.file.test_module_file
+    if test_module_file:
+        if test_module_file.short_path.startswith("../"):
+            test_module_path = test_module_file.short_path[3:]
+        else:
+            test_module_path = ctx.workspace_name + "/" + test_module_file.short_path
+        args.add("--test_module_path", test_module_path)
+
+    args.add("--status_file", status_file.path)
+
+    if ctx.attr.hdl_toplevel:
+        args.add("--hdl_toplevel", ctx.attr.hdl_toplevel)
+    combined_test_args = []
+    for arg in ctx.attr.test_args:
+        if not arg.startswith("+fsdbfile+"):
+            combined_test_args.append(arg)
+    if ctx.attr.waves:
+        combined_test_args.append("+fsdbfile+" + fsdb_file.path)
+    args.add("--test_args", " ".join(combined_test_args))
+
+    # Shell command:
+    # 1. Clean status file.
+    # 2. Run simulation runner.
+    # 3. Detect transient license failures (fail build immediately).
+    # 4. Touch output targets to satisfy Bazel declared output constraint.
+    # 5. Fail the build if the status file is missing (setup crash).
+    # 6. Fail the build if simulator crashed (exit code > 128).
+    command = """
+rm -f "{status}"
+runner="$1"; shift;
+"$runner" "$@" > "{log}" 2>&1
+exit_code=$?
+if grep -q -i -E "Failed to obtain license|License checkout failed|flexnet licensing error|No such feature exists" "{log}"; then
+  echo "VCS License/Infra failure detected. Failing build to avoid caching." >&2
+  exit 1
+fi
+touch "{log}" "{fsdb}"
+if [ ! -f "{status}" ]; then
+  echo "Error: Simulation status file was not created (runner crashed during setup)." >&2
+  exit 1
+fi
+if [ $exit_code -gt 128 ]; then
+  echo "Simulator crashed with exit code $exit_code" >&2
+  exit $exit_code
+fi
+exit 0
+""".format(
+        log = log_file.path,
+        fsdb = fsdb_file.path,
+        status = status_file.path,
+    )
+
+    inputs = []
+    if ctx.file.test_module_file:
+        inputs.append(ctx.file.test_module_file)
+
+    env = {}
+    for k, v in ctx.attr.extra_env.items():
+        env[k] = v
+    if ctx.attr.seed:
+        env["RANDOM_SEED"] = ctx.attr.seed
+
+    # Safely forward executable and arguments to run_shell to avoid shell word-splitting.
+    ctx.actions.run_shell(
+        outputs = [log_file, fsdb_file, status_file],
+        inputs = inputs,
+        tools = [ctx.executable.runner, ctx.executable.model],
+        arguments = [ctx.executable.runner.path, args],
+        command = command,
+        # Required to inherit VCS licensing environment variables (e.g. LM_LICENSE_FILE) from host.
+        use_default_shell_env = True,
+        env = env,
+        mnemonic = "VcsSimulationRun",
+    )
+    return [
+        DefaultInfo(
+            files = depset([fsdb_file]),
+            runfiles = ctx.runfiles(files = [fsdb_file, log_file, status_file]),
+        ),
+        VcsSimulationInfo(
+            log_file = log_file,
+            status_file = status_file,
+            fsdb_file = fsdb_file,
+        ),
+    ]
+
+vcs_simulation_run = rule(
+    implementation = _vcs_simulation_run_impl,
+    doc = "Executes a VCS simulation build action producing wave and log artifacts.",
+    attrs = {
+        "runner": attr.label(executable = True, cfg = "exec"),
+        "model": attr.label(allow_single_file = True, executable = True, cfg = "exec"),
+        "testcase": attr.string(),
+        "test_module_file": attr.label(allow_single_file = True),
+        "hdl_toplevel": attr.string(),
+        "extra_env": attr.string_dict(),
+        "test_args": attr.string_list(),
+        "seed": attr.string(),
+        "waves": attr.bool(default = True),
+    },
+)
+
+def _vcs_simulation_test_impl(ctx):
+    exe = ctx.actions.declare_file(ctx.attr.name + "_test_checker.sh")
+    sim_info = ctx.attr.run_target[VcsSimulationInfo]
+    log_file = sim_info.log_file
+    status_file = sim_info.status_file
+
+    # Write a script that checks the status file
+    script_content = """#!/bin/bash
+status_val=$(cat "{status}")
+if [ -z "$status_val" ] || [ "$status_val" -ne 0 ]; then
+  echo "Simulation failed with exit code ${{status_val:-unknown}}"
+  echo "--- Simulation Log ---"
+  cat "{log}"
+  exit 1
+fi
+echo "Simulation passed."
+exit 0
+""".format(
+        status = status_file.short_path,
+        log = log_file.short_path,
+    )
+
+    ctx.actions.write(
+        output = exe,
+        content = script_content,
+        is_executable = True,
+    )
+    return [
+        DefaultInfo(
+            files = depset([exe]),
+            runfiles = ctx.runfiles(files = [exe, log_file, status_file]),
+            executable = exe,
+        ),
+    ]
+
+vcs_simulation_test = rule(
+    implementation = _vcs_simulation_test_impl,
+    doc = "Inspects simulation logs to verify test status and report results.",
+    attrs = {
+        "run_target": attr.label(mandatory = True, providers = [VcsSimulationInfo]),
+    },
+    test = True,
+)
+
+def vcs_simulation_split_test(
+        name,
+        hdl_toplevel,
+        test_module,
+        deps = [],
+        data = [],
+        verilog_model_files = [],
+        verilog_sources = [],  # buildifier: disable=unused-variable
+        model = None,
+        extra_env = [],
+        test_args = [],
+        **kwargs):
+    """Instantiates split build and test targets for VCS cocotb simulation.
+
+    NOTE: This split flow is for gate-level power analysis where FSDB waveforms
+    must be Bazel build outputs. For standard testing, use vcs_cocotb_test.
+
+    WARNING: Keep in sync with vcs_cocotb_test / @rules_hdl:
+    1. CLI Flags: _vcs_simulation_run_impl must manually forward new flags.
+    2. Coverage: If using -cm, declare <name>.vdb output in vcs_simulation_run.
+    3. Failures: Simulation runs as a build action; failures are BUILD failures.
+
+    Args:
+        name: Name of the test target.
+        hdl_toplevel: Name of the top-level HDL module.
+        test_module: Python module containing tests.
+        deps: Python libraries.
+        data: Data files.
+        verilog_model_files: Verilog simulation models.
+        verilog_sources: Verilog sources (ignored).
+        model: Compiled VCS model.
+        extra_env: Environment variables.
+        test_args: Simulator arguments.
+        **kwargs: Additional arguments.
+    """
+
+    tags = list(kwargs.pop("tags", []))
+    if "vcs" not in tags:
+        tags.append("vcs")
+    if "cpu:2" not in tags:
+        tags.append("cpu:2")
+
+    run_tags = list(tags)
+    if "manual" not in run_tags:
+        run_tags.append("manual")
+    if "requires-network" not in run_tags:
+        run_tags.append("requires-network")
+
+    test_kwargs = {}
+    for attr_name in ["timeout", "flaky", "size", "shard_count", "local"]:
+        if attr_name in kwargs:
+            test_kwargs[attr_name] = kwargs.pop(attr_name)
+    if "size" not in test_kwargs:
+        test_kwargs["size"] = "medium"
+
+    if test_kwargs.get("local") and "local" not in run_tags:
+        run_tags.append("local")
+
+    seed = kwargs.pop("seed", "")
+    if type(seed) == "list":
+        seed = seed[0] if seed else ""
+    waves = kwargs.pop("waves", True)
+
+    full_data = list(data) + list(verilog_model_files)
+    if model:
+        full_data.append(model)
+
+    tm_label = test_module[0] if type(test_module) == "list" else test_module
+    full_data.append(tm_label)
+
+    py_library(
+        name = name + "_sim_runner_lib",
+        srcs = [],
+        deps = [
+            requirement("cocotb"),
+            requirement("numpy"),
+            requirement("pytest"),
+            "@rules_hdl//cocotb:cocotb_wrapper",
+            "@bazel_tools//tools/python/runfiles",
+        ],
+        tags = ["manual"],
+    )
+
+    py_binary(
+        name = name + "_sim_runner",
+        srcs = ["@coralnpu_hw//rules:sim_runner.py"],
+        main = "@coralnpu_hw//rules:sim_runner.py",
+        deps = deps + [":" + name + "_sim_runner_lib"],
+        data = full_data,
+        tags = ["manual"],
+    )
+
+    env_dict = {}
+    for entry in extra_env:
+        if "=" in entry:
+            k, v = entry.split("=", 1)
+            env_dict[k] = v
+
+    tc = kwargs.get("testcase", "")
+    if type(tc) == "list":
+        tc = tc[0] if tc else ""
+
+    vcs_simulation_run(
+        name = name + "_run",
+        runner = ":" + name + "_sim_runner",
+        model = model,
+        testcase = tc,
+        test_module_file = tm_label,
+        hdl_toplevel = hdl_toplevel,
+        extra_env = env_dict,
+        test_args = test_args,
+        seed = str(seed),
+        waves = waves,
+        tags = run_tags,
+    )
+
+    vcs_simulation_test(
+        name = name,
+        run_target = ":" + name + "_run",
+        tags = tags,
+        **test_kwargs
+    )
+
 def vcs_cocotb_test(
         name,
         hdl_toplevel,
@@ -532,7 +829,13 @@ def vcs_cocotb_test(
         deps: Additional dependencies for the test.
         data: Data dependencies for the test.
         verilog_model_files: Labels of Verilog model files to pass to VCS with -v.
+        model: Target of precompiled VCS model.
         **kwargs: Additional arguments to pass to the cocotb_test rule.
+
+    CRITICAL DIVERGENCE WARNING:
+    If you introduce new runtime arguments, environment variables, or CLI flags
+    to this function or its underlying @rules_hdl rule, you MUST also update
+    _vcs_simulation_run_impl above to ensure the split-test flow remains in sync!
     """
     tags = list(kwargs.pop("tags", []))
     tags.append("vcs")
@@ -601,6 +904,7 @@ def _vcs_cocotb_test_suite(
         add_ci_tags = True,
         name_fsdb_after_test = False,
         model = None,
+        split_build_test = False,
         **kwargs):
     """Runs a cocotb test with a vcs model.
 
@@ -612,7 +916,12 @@ def _vcs_cocotb_test_suite(
         verilog_sources: The verilog sources to use for the test.
         testcases: A list of testcases to run. A test will be generated for each
           testcase.
+        testcases_vname: Variable name of testcases for tagging.
         tests_kwargs: A dictionary of arguments to pass to the cocotb_test rule.
+        add_ci_tags: Whether to add CI suite tags.
+        name_fsdb_after_test: Whether to name FSDB file after testcase.
+        model: Target of precompiled VCS model.
+        split_build_test: Whether to split execution into build and test targets.
         **kwargs: Additional arguments to pass to the cocotb_test rule.
     """
     all_tests_kwargs = dict(tests_kwargs)
@@ -669,15 +978,27 @@ def _vcs_cocotb_test_suite(
             if name_fsdb_after_test:
                 clean_test_args.append("+fsdbfile+{}_{}.fsdb".format(name, tc))
 
-            vcs_cocotb_test(
-                name = "{}_{}".format(name, tc),
-                testcase = [tc],
-                tags = tags,
-                test_args = clean_test_args,
-                verilog_sources = verilog_sources,
-                model = model,
-                **tc_tests_kwargs
-            )
+            if split_build_test:
+                # DIVERGENCE Anchor: Ensure keyword arguments passed here match vcs_cocotb_test below
+                vcs_simulation_split_test(
+                    name = "{}_{}".format(name, tc),
+                    testcase = [tc],
+                    tags = tags,
+                    test_args = clean_test_args,
+                    verilog_sources = verilog_sources,
+                    model = model,
+                    **tc_tests_kwargs
+                )
+            else:
+                vcs_cocotb_test(
+                    name = "{}_{}".format(name, tc),
+                    testcase = [tc],
+                    tags = tags,
+                    test_args = clean_test_args,
+                    verilog_sources = verilog_sources,
+                    model = model,
+                    **tc_tests_kwargs
+                )
             test_targets.append(":{}_{}".format(name, tc))
 
     # Generate a meta-target for all tests.
@@ -696,13 +1017,23 @@ def _vcs_cocotb_test_suite(
         clean_meta_test_args.append("+fsdbfile+{}.fsdb".format(name))
         meta_target_kwargs["test_args"] = clean_meta_test_args
 
-    vcs_cocotb_test(
-        name = name,
-        tags = tags,
-        verilog_sources = verilog_sources,
-        model = model,
-        **meta_target_kwargs
-    )
+    if split_build_test:
+        # DIVERGENCE Anchor: Ensure keyword arguments passed here match vcs_cocotb_test below
+        vcs_simulation_split_test(
+            name = name,
+            tags = tags,
+            verilog_sources = verilog_sources,
+            model = model,
+            **meta_target_kwargs
+        )
+    else:
+        vcs_cocotb_test(
+            name = name,
+            tags = tags,
+            verilog_sources = verilog_sources,
+            model = model,
+            **meta_target_kwargs
+        )
 
 def cocotb_test_suite(name, testcases, simulators = ["verilator"], coverage = False, coverage_cfg = None, debug_access = False, **kwargs):
     """Runs a cocotb test with a verilator or vcs model.

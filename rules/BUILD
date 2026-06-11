@@ -12,11 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-exports_files(glob(["*.bzl"]))
 package(default_visibility = ["//visibility:public"])
+
+exports_files(glob(["*.bzl"]))
 
 exports_files([
     "default.vlt.tpl",
     "chisel_test_runner.sh",
     "vcs_model_wrapper.sh.template",
+    # Sourced by cocotb rules. Must be referenced via fully qualified label:
+    # "@coralnpu_hw//rules:sim_runner.py" to support multi-workspace execution.
+    "sim_runner.py",
 ])

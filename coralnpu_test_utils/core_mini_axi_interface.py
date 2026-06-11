@@ -248,7 +248,7 @@ class CoreMiniAxiInterface:
       timeout_count = 0
       while True:
         await FallingEdge(self.dut.io_aclk)
-        if self.axi_slave_write_addr.ready_signal.value:
+        if self.axi_slave_write_addr.ready_signal.value == 1:
           break
         timeout_count += 1
         if timeout_count >= timeout:
@@ -267,7 +267,7 @@ class CoreMiniAxiInterface:
       timeout_count = 0
       while True:
         await FallingEdge(self.dut.io_aclk)
-        if self.axi_slave_write_data.ready_signal.value:
+        if self.axi_slave_write_data.ready_signal.value == 1:
           break
         timeout_count += 1
         if timeout_count >= timeout:
@@ -286,17 +286,17 @@ class CoreMiniAxiInterface:
     while True:
       await RisingEdge(self.dut.io_aclk)
       # slave_bagent
-      if self.dut.io_axi_slave_write_resp_valid.value:
+      if self.dut.io_axi_slave_write_resp_valid.value == 1:
         try:
           bdata = dict()
-          bdata["id"] = self.dut.io_axi_slave_write_resp_bits_id
-          bdata["resp"] = self.dut.io_axi_slave_write_resp_bits_resp
+          bdata["id"] = self.dut.io_axi_slave_write_resp_bits_id.value
+          bdata["resp"] = self.dut.io_axi_slave_write_resp_bits_resp.value
           await self.slave_bfifo.put(bdata)
         except Exception as e:
           print("X seen in slave_bagent: " + str(e))
 
       # slave_ragent
-      if self.dut.io_axi_slave_read_data_valid.value:
+      if self.dut.io_axi_slave_read_data_valid.value == 1:
         try:
           rdata = dict()
           val = self.dut.io_axi_slave_read_data_bits_data.value
@@ -313,7 +313,7 @@ class CoreMiniAxiInterface:
           print("X seen in slave_ragent: " + str(e))
 
       # master_aragent
-      if self.dut.io_axi_master_read_addr_valid.value:
+      if self.dut.io_axi_master_read_addr_valid.value == 1:
         try:
           ardata = dict()
           ardata["id"] = self.dut.io_axi_master_read_addr_bits_id.value.to_unsigned()
@@ -327,7 +327,7 @@ class CoreMiniAxiInterface:
           raise e
 
       # master_awagent
-      if self.dut.io_axi_master_write_addr_valid.value:
+      if self.dut.io_axi_master_write_addr_valid.value == 1:
         try:
           awdata = dict()
           awdata["id"] = self.dut.io_axi_master_write_addr_bits_id.value.to_unsigned()
@@ -339,7 +339,7 @@ class CoreMiniAxiInterface:
           print("X seen in master_awagent: " + str(e))
 
       # master_wagent
-      if self.dut.io_axi_master_write_data_valid.value:
+      if self.dut.io_axi_master_write_data_valid.value == 1:
         try:
           wdata = dict()
           wdata["data"] = self.dut.io_axi_master_write_data_bits_data.value.to_bytes(byteorder="big")
@@ -358,7 +358,7 @@ class CoreMiniAxiInterface:
       timeout_count = 0
       while True:
         await FallingEdge(self.dut.io_aclk)
-        if self.axi_slave_read_addr.ready_signal.value:
+        if self.axi_slave_read_addr.ready_signal.value == 1:
           break
         timeout_count += 1
         if timeout_count >= timeout:
@@ -398,7 +398,7 @@ class CoreMiniAxiInterface:
       timeout_count = 0
       while True:
         await FallingEdge(self.dut.io_aclk)
-        if self.axi_master_read_data.ready_signal.value:
+        if self.axi_master_read_data.ready_signal.value == 1:
           break
         timeout_count += 1
         if timeout_count >= timeout:
@@ -443,7 +443,7 @@ class CoreMiniAxiInterface:
       timeout_count = 0
       while True:
         await FallingEdge(self.dut.io_aclk)
-        if self.axi_master_write_resp.ready_signal.value:
+        if self.axi_master_write_resp.ready_signal.value == 1:
           break
         timeout_count += 1
         if timeout_count >= timeout:
@@ -709,7 +709,7 @@ class CoreMiniAxiInterface:
     await write_addr_task
     await write_data_task
     bdata = await self.slave_bfifo.get()
-    assert bdata["id"].value == axi_id
+    assert bdata["id"] == axi_id
 
   async def _axi_valid_memory_addr(self, addr, data_len) -> bool:
     return (addr >= self.memory_base_addr) and (addr + data_len < self.memory_base_addr + len(self.memory))

@@ -236,6 +236,7 @@ load("@internal_check//:repositories.bzl", "synthesis_internal_repo")
 
 synthesis_internal_repo()
 
+# Note: Targets in @netlist_test must be executed from this workspace root.
 local_repository(
     name = "netlist_test",
     path = "internal/netlist_test",

@@ -32,19 +32,23 @@ def collect_verilog_files(targets, files = None):
         targets = [targets]
 
     transitive_dags = []
+    raw_files_depsets = []
     for target in targets:
         if VerilogInfo in target:
             transitive_dags.append(target[VerilogInfo].dag)
+        else:
+            raw_files_depsets.append(target.files)
 
     transitive_srcs = depset([], transitive = transitive_dags)
 
     flat_srcs = []
     for verilog_info_struct in transitive_srcs.to_list():
-        for src in verilog_info_struct.srcs:
-            flat_srcs.append(src)
+        flat_srcs.extend(verilog_info_struct.srcs)
 
-    for f in files:
-        flat_srcs.append(f)
+    if raw_files_depsets:
+        flat_srcs.extend(depset(transitive = raw_files_depsets).to_list())
+
+    flat_srcs.extend(files)
 
     return depset(flat_srcs)
 
