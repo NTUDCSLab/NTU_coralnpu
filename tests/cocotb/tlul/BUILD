@@ -560,3 +560,36 @@ cocotb_test_suite(
     },
     verilator_model = "//hdl/chisel/src/soc:coralnpu_chisel_subsystem_highmem_testharness_model",
 )
+
+# BEGIN_TESTCASES_FOR_tlul_to_sram_cocotb_test
+TLUL_TO_SRAM_TESTCASES = [
+    "test_tlul_to_sram_crv_balanced",
+    "test_tlul_to_sram_crv_random_backpressure",
+    "test_sram_read_write",
+    "test_sram_masking",
+    "test_sram_pipelining",
+]
+# END_TESTCASES_FOR_tlul_to_sram_cocotb_test
+
+cocotb_test_suite(
+    name = "tlul_to_sram_cocotb_test",
+    simulators = ["verilator", "vcs"],
+    testcases = TLUL_TO_SRAM_TESTCASES,
+    testcases_vname = "TLUL_TO_SRAM_TESTCASES",
+    tests_kwargs = {
+        "hdl_toplevel": "TlulToSram",
+        "test_module": ["test_tlul_to_sram.py"],
+        "deps": [
+            "//coralnpu_test_utils:TileLinkULInterface",
+        ],
+        "waves": True,
+        "size": "small",
+    },
+    verilator_model = "//hdl/chisel/src/bus:tlul_to_sram_model",
+    vcs_verilog_sources = ["//hdl/chisel/src/bus:tlul_to_sram_cc_library_verilog"],
+    vcs_build_args = VCS_BUILD_ARGS,
+    vcs_test_args = VCS_TEST_ARGS,
+    vcs_defines = VCS_DEFINES,
+    vcs_data = ["//hdl/verilog:dpi_files"],
+)
+

@@ -35,62 +35,75 @@ class TlulToSram(p: Parameters, sramAddressWidth: Int) extends Module {
     val sram = Flipped(new Sram128IO(sramAddressWidth))
   })
 
-  // Explicit Queues for A and D Channels to decouple bus and memory latency
-  val a_q = Module(new Queue(chiselTypeOf(io.tl.a.bits), 2))
-  val d_q = Module(new Queue(chiselTypeOf(io.tl.d.bits), 2))
+  // Output Skid Buffer (1-entry queue with flow-through)
+  val d_q = Module(new Queue(chiselTypeOf(io.tl.d.bits), entries = 1, flow = true, pipe = true))
 
-  io.tl.a <> a_q.io.enq
   io.tl.d <> d_q.io.deq
 
-  // Metadata Queue to track outstanding requests through the SRAM pipeline
-  val metadata_q = Module(
-    new Queue(
-      new Bundle {
-        val source = UInt(tlul_p.o.W)
-        val size   = UInt(tlul_p.z.W)
-        val opcode = UInt(3.W)
-      },
-      4
-    )
-  )
+  val metadata_bits = Wire(new Bundle {
+    val source = UInt(tlul_p.o.W)
+    val size   = UInt(tlul_p.z.W)
+    val opcode = UInt(3.W)
+  })
+  metadata_bits.source := io.tl.a.bits.source
+  metadata_bits.size   := io.tl.a.bits.size
+  metadata_bits.opcode := io.tl.a.bits.opcode
 
-  // Internal Request Logic
-  // Only issue a request to SRAM if we have a pending TL-UL request AND
-  // space to store its metadata and eventual response.
-  val can_issue = a_q.io.deq.valid && d_q.io.enq.ready && metadata_q.io.enq.ready
-  a_q.io.deq.ready := can_issue
+  // Pipe delays the metadata by 1 cycle, driven by io.tl.a.fire
+  val metadata_pipe = Pipe(io.tl.a.fire, metadata_bits, latency = 1)
+
+  // Input handshake logic:
+  // We can accept a request if ((d_q.io.count + metadata_pipe.valid - d_q.io.deq.fire) === 0.U)
+  val a_ready = d_q.io.deq.fire || (!metadata_pipe.valid && (d_q.io.count === 0.U)) // simplified with k-map
+  // We accept request if Skid Buffer has space AND (no request is in flight OR host is ready to accept D response)
+  // This prevents in-flight requests from overflowing the Skid Buffer if the host stalls.
+  // similar to: d_q.io.enq.ready && (!metadata_pipe.valid || io.tl.d.ready)
+  io.tl.a.ready := a_ready
+  val can_issue = io.tl.a.valid && a_ready
 
   io.sram.enable := can_issue
-  io.sram.write  := a_q.io.deq.bits.opcode === TLULOpcodesA.PutFullData.asUInt ||
-    a_q.io.deq.bits.opcode === TLULOpcodesA.PutPartialData.asUInt
+  io.sram.write  := io.tl.a.bits.opcode === TLULOpcodesA.PutFullData.asUInt || io.tl.a.bits.opcode === TLULOpcodesA.PutPartialData.asUInt
   // SRAM is word-addressed (128-bit / 16-byte words)
-  io.sram.addr  := a_q.io.deq.bits.address >> log2Ceil(tlul_p.w)
-  io.sram.wdata := a_q.io.deq.bits.data
-  io.sram.wmask := a_q.io.deq.bits.mask
+  io.sram.addr  := io.tl.a.bits.address >> log2Ceil(tlul_p.w)
+  io.sram.wdata := io.tl.a.bits.data
+  io.sram.wmask := io.tl.a.bits.mask
 
-  metadata_q.io.enq.valid       := can_issue
-  metadata_q.io.enq.bits.source := a_q.io.deq.bits.source
-  metadata_q.io.enq.bits.size   := a_q.io.deq.bits.size
-  metadata_q.io.enq.bits.opcode := a_q.io.deq.bits.opcode
+  // Assertion: if pipe is outputting data, d_q.io.enq must be ready
+  assert(!metadata_pipe.valid || d_q.io.enq.ready, "Metadata pipe output valid but d_q is not ready")
 
   // D channel response formulation
-  // Registered SRAM memory responds in the cycle after enable is asserted.
-  // metadata_q stores the metadata for that response.
-  val is_read = metadata_q.io.deq.bits.opcode === TLULOpcodesA.Get.asUInt
+  val is_read = metadata_pipe.bits.opcode === TLULOpcodesA.Get.asUInt
 
   // For registered memory, we expect rvalid to be asserted 1 cycle after enable.
-  d_q.io.enq.valid       := metadata_q.io.deq.valid && io.sram.rvalid
+  d_q.io.enq.valid       := metadata_pipe.valid && io.sram.rvalid
   d_q.io.enq.bits        := 0.U.asTypeOf(d_q.io.enq.bits)
   d_q.io.enq.bits.opcode := Mux(
     is_read,
     TLULOpcodesD.AccessAckData.asUInt,
     TLULOpcodesD.AccessAck.asUInt
   )
-  d_q.io.enq.bits.source := metadata_q.io.deq.bits.source
-  d_q.io.enq.bits.size   := metadata_q.io.deq.bits.size
+  d_q.io.enq.bits.source := metadata_pipe.bits.source
+  d_q.io.enq.bits.size   := metadata_pipe.bits.size
   d_q.io.enq.bits.data   := io.sram.rdata
   d_q.io.enq.bits.error  := false.B
   d_q.io.enq.bits.user   := 0.U.asTypeOf(d_q.io.enq.bits.user)
-
-  metadata_q.io.deq.ready := d_q.io.enq.fire
 }
+
+import scala.annotation.nowarn
+import _root_.circt.stage.{ChiselStage, FirtoolOption}
+import chisel3.stage.ChiselGeneratorAnnotation
+
+@nowarn
+object TlulToSramEmitter extends App {
+  val p = new Parameters
+  p.lsuDataBits = 128
+  (new ChiselStage).execute(
+    Array("--target", "systemverilog") ++ args,
+    Seq(
+      ChiselGeneratorAnnotation(() =>
+        new TlulToSram(p, 10)
+      )
+    ) ++ Seq(FirtoolOption("-enable-layers=Verification"))
+  )
+}
+

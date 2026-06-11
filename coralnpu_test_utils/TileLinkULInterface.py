@@ -18,6 +18,7 @@ from cocotb.queue import Queue
 from cocotb.triggers import FallingEdge, RisingEdge, with_timeout
 import cocotb.result
 import math
+import random
 
 from coralnpu_test_utils.secded_golden import get_cmd_intg, get_data_intg, get_rsp_intg
 
@@ -82,13 +83,15 @@ class TileLinkULInterface:
                  clock_name="clock",
                  reset_name="reset",
                  reset_active_low=False,
-                 width=32):
+                 width=32,
+                 backpressure=False):
         self.dut = dut
         self.clock = getattr(dut, clock_name)
         self.reset = getattr(dut, reset_name)
         self.reset_active_low = reset_active_low
         self.width = width
         self.name = host_if_name or device_if_name
+        self.backpressure = backpressure
 
         if host_if_name is None and device_if_name is None:
             raise ValueError(
@@ -168,8 +171,10 @@ class TileLinkULInterface:
         d_ready.value = 1
         while True:
             await RisingEdge(self.clock)
+            if self.backpressure:
+                d_ready.value = random.randint(0, 1)
             try:
-                if d_valid.value:
+                if d_valid.value and d_ready.value == 1:
                     # Capture the transaction
                     txn = {'user': {}}
                     for prop in ["opcode", "param", "size", "source", "sink", "data", "error"]:
