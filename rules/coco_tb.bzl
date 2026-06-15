@@ -432,6 +432,7 @@ def verilator_cocotb_test(
             requirement("pytest"),
         ],
         data = data,
+        tags = tags,
     )
 
     extra_env = list(kwargs.pop("extra_env", []))
@@ -554,6 +555,7 @@ def vcs_cocotb_test(
             requirement("pytest"),
         ],
         data = data,
+        tags = tags,
     )
 
     extra_env = list(kwargs.pop("extra_env", []))

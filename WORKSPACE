@@ -198,6 +198,17 @@ load("@tflm_pip_deps//:requirements.bzl", "install_deps")
 
 install_deps()
 
+pip_parse(
+    name = "gemma_deps",
+    python_interpreter_target = "@python311_x86_64-unknown-linux-gnu//:python",
+    requirements_lock = "//third_party:gemma_requirements.txt",
+)
+
+load("@gemma_deps//:requirements.bzl", gemma_install_deps = "install_deps")
+
+gemma_install_deps()
+
+
 load("@rules_cc//cc:extensions.bzl", cc_compatibility_proxy_repo = "compatibility_proxy_repo")
 
 cc_compatibility_proxy_repo()
