@@ -118,6 +118,7 @@ void CoreMiniAxi_tb::Connect() {
   core_->io_te(io_te);
   core_->io_boot_addr(io_boot_addr);
 
+#if KP_exposeDebugPorts
   core_->io_debug_en(debug_io_.en);
   core_->io_debug_cycles(debug_io_.cycles);
   core_->io_debug_addr_0(debug_io_.addr_0);
@@ -203,6 +204,7 @@ void CoreMiniAxi_tb::Connect() {
 #undef BIND_RB_DEBUG_IO
 #undef BIND_RB_DEBUG_IO_VECS_8
 #undef BIND_RB_DEBUG_IO_VEC
+#endif
   core_->io_dm_req_valid(dm_io_.req_valid);
   core_->io_dm_req_ready(dm_io_.req_ready);
   core_->io_dm_req_bits_address(dm_io_.req_bits_address);

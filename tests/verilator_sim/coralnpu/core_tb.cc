@@ -133,6 +133,7 @@ static void Core_run(const char* name, const char* bin, const int cycles,
   sc_signal<sc_bv<KP_lsuDataBits / 8> > io_ebus_dbus_wmask;
   sc_signal<sc_bv<KP_lsuDataBits> > io_ebus_dbus_rdata;
   sc_signal<bool> io_ebus_internal;
+#if KP_exposeDebugPorts
   sc_signal<sc_bv<4> > io_debug_en;
   sc_signal<sc_bv<KP_xlen> > io_debug_cycles;
   sc_signal<bool> io_debug_dbus_valid;
@@ -184,6 +185,7 @@ static void Core_run(const char* name, const char* bin, const int cycles,
   sc_signal<sc_bv<32> > io_debug_inst##x;
   REPEAT(IO_DEBUG, KP_instructionLanes);
 #undef IO_DEBUG
+#endif
 
   io_iflush_ready = 1;
   io_dflush_ready = 1;
@@ -265,6 +267,7 @@ static void Core_run(const char* name, const char* bin, const int cycles,
   core.io_ebus_dbus_wmask(io_ebus_dbus_wmask);
   core.io_ebus_dbus_rdata(io_ebus_dbus_rdata);
   core.io_ebus_internal(io_ebus_internal);
+#if KP_exposeDebugPorts
   core.io_debug_en(io_debug_en);
   core.io_debug_cycles(io_debug_cycles);
   core.io_debug_dbus_valid(io_debug_dbus_valid);
@@ -315,6 +318,7 @@ static void Core_run(const char* name, const char* bin, const int cycles,
   core.io_debug_inst_##x(io_debug_inst##x);
   REPEAT(BIND_DEBUG, KP_instructionLanes);
 #undef BIND_DEBUG
+#endif
 
   mif.clock(tb.clock);
   mif.reset(tb.reset);

@@ -36,7 +36,7 @@ class RetirementBufferIO(p: Parameters) extends Bundle {
   val nRetired = Output(UInt(log2Ceil(p.retirementBufferSize + 1).W))
   val empty = Output(Bool())
   val trapPending = Output(Bool())
-  val debug = Output(new RetirementBufferDebugIO(p))
+  val debug = Option.when(p.shouldExposeDebugPorts)(Output(new RetirementBufferDebugIO(p)))
 }
 
 /**
@@ -122,19 +122,31 @@ class RetirementBuffer(p: Parameters, mini: Boolean = false) extends Module {
     val width = finst.inst(14,12)
     // Float store: opcode 0x27 with width ∈ {001, 010, 011, 100}
     // These are 16b, 32b, 64b, 128b FP stores
-    val floatStore = (finst.inst(6,0) === "b0100111".U) &&
-                     (width === "b001".U || width === "b010".U ||
-                      width === "b011".U || width === "b100".U)
+    val floatStore = if (p.enableFloat) {
+      (finst.inst(6,0) === "b0100111".U) &&
+      (width === "b001".U || width === "b010".U ||
+       width === "b011".U || width === "b100".U)
+    } else {
+      false.B
+    }
     // Vector store: opcode 0x27 with width ∈ {000, 101, 110, 111}
     // These are 8b, 16b, 32b, 64b element vector stores
-    val vectorStore = (finst.inst(6,0) === "b0100111".U) &&
-                      (width === "b000".U || width === "b101".U ||
-                       width === "b110".U || width === "b111".U)
+    val vectorStore = if (p.enableRvv) {
+      (finst.inst(6,0) === "b0100111".U) &&
+      (width === "b000".U || width === "b101".U ||
+       width === "b110".U || width === "b111".U)
+    } else {
+      false.B
+    }
     val store = scalarStore || floatStore || vectorStore
 
     val instr = Wire(new Instruction)
     instr.addr := finst.addr
-    instr.inst := finst.inst
+    if (mini) {
+      instr.inst := 0.U
+    } else {
+      instr.inst := finst.inst
+    }
     instr.idx := MuxCase(noWriteRegIdx, Seq(
       floatValid -> (fAddr +& p.floatRegfileBaseAddr.U),
       (vectorValid) -> (vAddr +& p.rvvRegfileBaseAddr.U),
@@ -165,7 +177,11 @@ class RetirementBuffer(p: Parameters, mini: Boolean = false) extends Module {
     instr.addr := io.fault.bits.mepc
     // mtval only contains instruction bits for illegal instruction faults (mcause == 2).
     // For other faults (like misaligned address), it contains addresses.
-    instr.inst := Mux(!mini.B && io.fault.bits.mcause === 2.U, io.fault.bits.mtval, finst.inst)
+    if (mini) {
+      instr.inst := 0.U
+    } else {
+      instr.inst := Mux(io.fault.bits.mcause === 2.U, io.fault.bits.mtval, finst.inst)
+    }
     // Re-calculate linkOk for the fault PC against the last retired instruction's target.
     instr.linkOk := (instr.addr === regLastTarget) || (regLastIsBranch && instr.addr === regLastAddr + 4.U)
     instr
@@ -436,20 +452,24 @@ class RetirementBuffer(p: Parameters, mini: Boolean = false) extends Module {
   io.nRetired := deqReady - retiredEcalls
   io.trapPending := RegNext(hasTrap && !trapRetired, false.B)
 
-  for (i <- 0 until bufferSize) {
-    val valid = (i.U < instBuffer.io.deqReady)
-    val allowDebug = resultUpdate(i).bits.trap && instBuffer.io.dataOut(i).isControlFlow && noFire0Fault
-    io.debug.inst(i).valid := valid
-    io.debug.inst(i).bits.pc := MuxOR(valid, instBuffer.io.dataOut(i).addr)
-    io.debug.inst(i).bits.inst := MuxOR(valid && !mini.B, instBuffer.io.dataOut(i).inst)
-    io.debug.inst(i).bits.data := MuxOR(valid && !mini.B, resultUpdate(i).bits.result)
-    io.debug.inst(i).bits.idx := MuxOR(valid, Mux(resultUpdate(i).bits.trap && !allowDebug, noWriteRegIdx, instBuffer.io.dataOut(i).idx))
-    io.debug.inst(i).bits.trap := MuxOR(valid, resultUpdate(i).bits.trap)
-    if (!mini && p.enableRvv) {
-      val pIdx = accDeqPtr + i.U
-      io.debug.inst(i).bits.vecWrites.get := debugVectorWrites.get(pIdx)
-    } else if (p.enableRvv) {
-      io.debug.inst(i).bits.vecWrites.get := 0.U.asTypeOf(io.debug.inst(i).bits.vecWrites.get)
+  io.debug.foreach { debug =>
+    for (i <- 0 until bufferSize) {
+      val valid = (i.U < instBuffer.io.deqReady)
+      val allowDebug = resultUpdate(i).bits.trap && instBuffer.io.dataOut(i).isControlFlow && noFire0Fault
+      debug.inst(i).valid := valid
+      debug.inst(i).bits.pc := MuxOR(valid, instBuffer.io.dataOut(i).addr)
+      debug.inst(i).bits.inst := MuxOR(valid && !mini.B, instBuffer.io.dataOut(i).inst)
+      debug.inst(i).bits.data := MuxOR(valid && !mini.B, resultUpdate(i).bits.result)
+      debug.inst(i).bits.idx := MuxOR(valid, Mux(resultUpdate(i).bits.trap && !allowDebug, noWriteRegIdx, instBuffer.io.dataOut(i).idx))
+      debug.inst(i).bits.trap := MuxOR(valid, resultUpdate(i).bits.trap)
+      if (p.enableRvv) {
+        val pIdx = accDeqPtr + i.U
+        if (!mini) {
+          debug.inst(i).bits.vecWrites.get := debugVectorWrites.get(pIdx)
+        } else {
+          debug.inst(i).bits.vecWrites.get := 0.U.asTypeOf(debug.inst(i).bits.vecWrites.get)
+        }
+      }
     }
   }
 }

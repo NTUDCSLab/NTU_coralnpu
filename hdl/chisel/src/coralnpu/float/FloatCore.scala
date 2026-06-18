@@ -151,7 +151,7 @@ object GenerateCoreShimSource {
         |    .early_valid_o(early_valid_o)
         |  );
         |""".replaceAll("DIVSQRT_SEL", if (p.floatPulpDivsqrt != 0 || p.enableZfbfmin) "fpnew_pkg::PULP" else "fpnew_pkg::TH32")
-            .replaceAll("FEATURES", if (p.enableZfbfmin) """'{
+            .replaceAll("FEATURES", if (p.enableZfbfmin) """fpnew_pkg::fpu_features_t'{
         |  Width:         32,
         |  EnableVectors: 1'b0,
         |  EnableNanBox:  1'b1,

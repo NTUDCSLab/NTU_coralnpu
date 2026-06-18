@@ -23,6 +23,7 @@ load(
 load("@coralnpu_hw//rules:lint.bzl", "vcstatic_lint")
 load("@coralnpu_hw//rules:utils.bzl", "template_rule")
 load("@coralnpu_hw//rules:verilog.bzl", "verilog_zip_bundle")
+load("//hdl/chisel/src/coralnpu:flags.bzl", "RVV_CORE_MINI_AXI_COMMON_GEN_FLAGS")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -543,6 +544,7 @@ template_rule(
                 "--enableZfbfmin=True",
                 "--moduleName=CoreMini",
                 "--useAxi",
+                "--exposeDebugPorts=True",
             ],
             "module_name": "CoreMiniAxi",
             "verilog_file_path": "CoreMiniAxi.sv",
@@ -659,17 +661,6 @@ vcstatic_lint(
     waive_tags = ["UndrivenInTerm-ML"],
 )
 
-RVV_CORE_MINI_AXI_COMMON_GEN_FLAGS = [
-    "--enableFetchL0=False",
-    "--fetchDataBits=128",
-    "--lsuDataBits=128",
-    "--enableRvv=True",
-    "--enableFloat=True",
-    "--enableZfbfmin=True",
-    "--enableVectorBf16=True",
-    "--useAxi",
-]
-
 template_rule(
     chisel_cc_library,
     {
@@ -700,6 +691,7 @@ template_rule(
                 "--moduleName=RvvCoreMini",
                 "--itcmSizeKBytes=8",
                 "--dtcmSizeKBytes=32",
+                "--enableVerification=True",
             ] + RVV_CORE_MINI_AXI_COMMON_GEN_FLAGS,
             "module_name": "RvvCoreMiniAxi",
         },

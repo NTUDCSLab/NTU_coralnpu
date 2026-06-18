@@ -75,6 +75,22 @@ class Parameters(var m: Seq[MemoryRegion] = Seq(), val hartId: Int = 0, val xlen
   // Enable extra logic for verification purposes.
   var enableVerification = false
 
+  // TODO: It might seem intuitive to couple exposeDebugPorts and
+  // enableVerification, as debug ports are only needed for verification.
+  // However, coupling them is not trivial because enableVerification also
+  // enables the full Retirement Buffer (ROB) tracking mode (mini = false).
+  // Under configurations with RVV disabled but Float enabled (like core_mini_axi_sim),
+  // the full ROB mode has hardware bugs/hangs (e.g. vector store waits and reset
+  // oscillations). We still need the debug ports exposed for these targets to
+  // generate instruction traces for riscv-dv co-simulation, but we must run
+  // the ROB in mini mode (enableVerification = false) to avoid the hangs.
+  // Thus, we keep these parameters decoupled.
+  // Expose the debug/trace ports at the module boundary.
+  var exposeDebugPorts = false
+
+  // Expose ports if explicitly requested, or automatically if full verification is enabled.
+  def shouldExposeDebugPorts: Boolean = { exposeDebugPorts || enableVerification }
+
   // Enable RVV. This conforms to the RVV1.0 specification.
   var enableRvv = false
   val rvvVlen = 128
@@ -193,6 +209,7 @@ object EmitParametersHeader {
     builder = builder.append(s"#define KP_dbusSize ${p.dbusSize}\n")
     builder = builder.append(s"#define KP_useRetirementBuffer ${p.useRetirementBuffer}\n")
     builder = builder.append(s"#define KP_retirementBufferIdxWidth ${p.retirementBufferIdxWidth}\n")
+    builder = builder.append(s"#define KP_exposeDebugPorts ${p.shouldExposeDebugPorts}\n")
     builder = builder.append("#endif\n")
     builder.result()
   }

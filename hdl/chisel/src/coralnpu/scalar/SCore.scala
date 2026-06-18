@@ -49,7 +49,7 @@ class SCore(p: Parameters) extends Module {
     val iflush = new IFlushIO(p)
     val dflush = new DFlushIO(p)
 
-    val debug = new DebugIO(p)
+    val debug = Option.when(p.shouldExposeDebugPorts)(new DebugIO(p))
   })
 
   // The functional units that make up the core.
@@ -506,61 +506,64 @@ class SCore(p: Parameters) extends Module {
 
   // ---------------------------------------------------------------------------
   // DEBUG
-  io.debug.cycles := csr.io.csr.out.value(4)
+  require(io.debug.isDefined == rob_io.debug.isDefined, "Debug port presence mismatch between SCore and RetirementBuffer")
+  io.debug.zip(rob_io.debug).foreach { case (debug, robDebug) =>
+    debug.cycles := csr.io.csr.out.value(4)
 
-  val debugEn = RegInit(0.U(p.instructionLanes.W))
-  val debugAddr = RegInit(VecInit.fill(p.instructionLanes)(0.U(32.W)))
-  val debugInst = RegInit(VecInit.fill(p.instructionLanes)(0.U(32.W)))
+    val debugEn = RegInit(0.U(p.instructionLanes.W))
+    val debugAddr = RegInit(VecInit.fill(p.instructionLanes)(0.U(32.W)))
+    val debugInst = RegInit(VecInit.fill(p.instructionLanes)(0.U(32.W)))
 
-  val debugBrch = Cat(bru.map(_.io.taken.valid).scanRight(false.B)(_ || _))
+    val debugBrch = Cat(bru.map(_.io.taken.valid).scanRight(false.B)(_ || _))
 
-  debugEn := Cat(fetch.io.inst.lanes.map(x => x.valid && x.ready && !branchTaken))
+    debugEn := Cat(fetch.io.inst.lanes.map(x => x.valid && x.ready && !branchTaken))
 
-  for (i <- 0 until p.instructionLanes) {
-    debugAddr(i) := Mux(debugEn(i), fetch.io.inst.lanes(i).bits.addr, debugAddr(i))
-    debugInst(i) := Mux(debugEn(i), fetch.io.inst.lanes(i).bits.inst, debugInst(i))
-  }
-
-  io.debug.en := debugEn & ~debugBrch
-
-  io.debug.addr <> debugAddr
-  io.debug.inst <> debugInst
-
-  io.debug.dbus.valid := io.dbus.valid
-  io.debug.dbus.bits.addr := io.dbus.addr
-  io.debug.dbus.bits.wdata := io.dbus.wdata
-  io.debug.dbus.bits.write := io.dbus.write
-
-  for (i <- 0 until p.instructionLanes) {
-    io.debug.dispatch(i).instFire := dispatch.io.inst(i).fire
-    io.debug.dispatch(i).instAddr := dispatch.io.inst(i).bits.addr
-    io.debug.dispatch(i).instInst := dispatch.io.inst(i).bits.inst
-  }
-
-  for (i <- 0 until p.instructionLanes) {
-    io.debug.regfile.writeAddr(i).valid := regfile.io.writeAddr(i).valid
-    io.debug.regfile.writeAddr(i).bits := regfile.io.writeAddr(i).addr
-  }
-
-  for (i <- 0 until p.instructionLanes + 2) {
-    io.debug.regfile.writeData(i) := regfile.io.writeData(i)
-  }
-
-  if (p.enableFloat) {
-    io.debug.float.get.writeAddr.valid := dispatch.io.rdMark_flt.get.valid
-    io.debug.float.get.writeAddr.bits := dispatch.io.rdMark_flt.get.addr
-    for (i <- 0 until 2) {
-      io.debug.float.get.writeData(i).valid := fRegfile.get.io.write_ports(i).valid
-      io.debug.float.get.writeData(i).bits.addr := fRegfile.get.io.write_ports(i).addr
-      io.debug.float.get.writeData(i).bits.data := fRegfile.get.io.write_ports(i).data.asWord
+    for (i <- 0 until p.instructionLanes) {
+      debugAddr(i) := Mux(debugEn(i), fetch.io.inst.lanes(i).bits.addr, debugAddr(i))
+      debugInst(i) := Mux(debugEn(i), fetch.io.inst.lanes(i).bits.inst, debugInst(i))
     }
-  }
 
-  io.debug.rb := rob_io.debug
-  if (p.useRetirementBuffer) {
-    val rvvi = Module(new RvviTrace(p))
-    rvvi.io.rb := rob_io.debug
-    rvvi.io.csr := csr.io.trace
+    debug.en := debugEn & ~debugBrch
+
+    debug.addr <> debugAddr
+    debug.inst <> debugInst
+
+    debug.dbus.valid := io.dbus.valid
+    debug.dbus.bits.addr := io.dbus.addr
+    debug.dbus.bits.wdata := io.dbus.wdata
+    debug.dbus.bits.write := io.dbus.write
+
+    for (i <- 0 until p.instructionLanes) {
+      debug.dispatch(i).instFire := dispatch.io.inst(i).fire
+      debug.dispatch(i).instAddr := dispatch.io.inst(i).bits.addr
+      debug.dispatch(i).instInst := dispatch.io.inst(i).bits.inst
+    }
+
+    for (i <- 0 until p.instructionLanes) {
+      debug.regfile.writeAddr(i).valid := regfile.io.writeAddr(i).valid
+      debug.regfile.writeAddr(i).bits := regfile.io.writeAddr(i).addr
+    }
+
+    for (i <- 0 until p.instructionLanes + 2) {
+      debug.regfile.writeData(i) := regfile.io.writeData(i)
+    }
+
+    if (p.enableFloat) {
+      debug.float.get.writeAddr.valid := dispatch.io.rdMark_flt.get.valid
+      debug.float.get.writeAddr.bits := dispatch.io.rdMark_flt.get.addr
+      for (i <- 0 until 2) {
+        debug.float.get.writeData(i).valid := fRegfile.get.io.write_ports(i).valid
+        debug.float.get.writeData(i).bits.addr := fRegfile.get.io.write_ports(i).addr
+        debug.float.get.writeData(i).bits.data := fRegfile.get.io.write_ports(i).data.asWord
+      }
+    }
+
+    debug.rb := robDebug
+    if (p.useRetirementBuffer) {
+      val rvvi = Module(new RvviTrace(p))
+      rvvi.io.rb := robDebug
+      rvvi.io.csr := csr.io.trace
+    }
   }
 }
 
