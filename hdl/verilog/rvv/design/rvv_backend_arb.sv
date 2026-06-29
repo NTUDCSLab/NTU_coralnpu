@@ -40,13 +40,9 @@ module rvv_backend_arb(
     assign grant[4]        = grant_fmamac[0][0];
     assign grant[8]        = grant_fmamac[0][1];
     assign result_valid[0] = grant[0] || grant[4] || grant[8];
-    always_comb begin
-      unique case(1'b1)
-        grant[0]:           result[0] = item[0];
-        grant_fmamac[0][0]: result[0] = item[4];
-        default:            result[0] = item[8];
-      endcase
-    end
+    assign result[0]       = {$bits(PU2ROB_t){grant[0]}}&item[0] |
+                             {$bits(PU2ROB_t){grant_fmamac[0][0]}}&item[4] |
+                             {$bits(PU2ROB_t){grant_fmamac[0][1]}}&item[8] ;
 
      // port 1
     assign grant[1]      = req[1];
@@ -58,13 +54,9 @@ module rvv_backend_arb(
     assign grant[5]        = grant_fmamac[1][0];
     assign grant[9]        = grant_fmamac[1][1];
     assign result_valid[1] = grant[1] || grant[5] || grant[9];
-    always_comb begin
-      unique case(1'b1)
-        grant[1]:           result[1] = item[1];
-        grant_fmamac[1][0]: result[1] = item[5];
-        default:            result[1] = item[9];
-      endcase
-    end
+    assign result[1]       = {$bits(PU2ROB_t){grant[1]}}&item[1] |
+                             {$bits(PU2ROB_t){grant_fmamac[1][0]}}&item[5] |
+                             {$bits(PU2ROB_t){grant_fmamac[1][1]}}&item[9] ;
 
     // port 2 and port 3
     assign grant[6] = req[6];

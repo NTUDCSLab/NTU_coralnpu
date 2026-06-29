@@ -70,9 +70,6 @@ module rvv_backend_decode_unit_lsu
   logic                               check_lmul;
   logic                               check_evl_not_0;
   logic                               check_vstart_sle_evl;
-`ifdef ZVE32F_ON
-  logic                               check_frm;
-`endif
   FUNCT6_u                            funct6_lsu;
   logic                               force_vma_agnostic; 
   logic                               force_vta_agnostic; 
@@ -93,7 +90,7 @@ module rvv_backend_decode_unit_lsu
   assign inst_umop      = inst_valid ? inst.bits[17:13] : 'b0;
   assign inst_funct3    = inst_valid ? inst.bits[7:5] : 'b0;
   assign inst_vd        = inst_valid ? inst.bits[4:0] : 'b0;
-  assign inst_opcode    = inst_valid ? inst.opcode : LOAD;
+  assign inst_opcode    = inst_valid ? inst.opcode : RVV;
   assign csr_vstart     = inst_valid ? inst.arch_state.vstart : 'b0;
   assign csr_vl         = inst_valid ? inst.arch_state.vl : 'b0;
   assign csr_sew        = inst_valid ? inst.arch_state.sew : SEW8;
@@ -3333,9 +3330,6 @@ module rvv_backend_decode_unit_lsu
 
   //check common requirements for all instructions
   assign check_common = check_vd_align&check_vs2_align&check_vd_in_range&check_sew&check_lmul
-                      `ifdef ZVE32F_ON
-                        &check_frm
-                      `endif
                         &check_evl_not_0&check_vstart_sle_evl;
 
   // check whether vd is aligned to emul_vd
@@ -3480,11 +3474,6 @@ module rvv_backend_decode_unit_lsu
 
   // check vstart < evl
   assign check_vstart_sle_evl = {1'b0,csr_vstart} < evl;
-
-`ifdef ZVE32F_ON
-  // check FP rounding mode is legal
-  assign check_frm = inst.arch_state.frm < 3'd5;
-`endif
 
   `ifdef ASSERT_ON
     `ifdef TB_SUPPORT

@@ -79,7 +79,7 @@ module rvv_backend_decode_unit_lsu_de2
   assign inst_umop      = lcmd_valid ? lcmd.cmd.bits[17:13] : 'b0;
   assign inst_funct3    = lcmd_valid ? lcmd.cmd.bits[7:5] : 'b0;
   assign inst_vd        = lcmd_valid ? lcmd.cmd.bits[4:0] : 'b0;
-  assign inst_opcode    = lcmd_valid ? lcmd.cmd.opcode : LOAD;
+  assign inst_opcode    = lcmd_valid ? lcmd.cmd.opcode : RVV;
   assign vector_csr_lsu = lcmd_valid ? lcmd.cmd.arch_state : 'b0;
   assign csr_vstart     = lcmd_valid ? lcmd.cmd.arch_state.vstart : 'b0;
   assign uop_index_max  = lcmd_valid ? lcmd.uop_index_max : 'b0;
@@ -751,6 +751,7 @@ always_comb begin
     for(j=0;j<`NUM_DE_UOP;j++) begin: ASSIGN_RES
     `ifdef TB_SUPPORT
       assign uop[j].uop_pc              = lcmd.cmd.inst_pc;
+      assign uop[j].res_updating_end    = 'b1;
     `endif  
       assign uop[j].uop_funct3          = inst_funct3;
       assign uop[j].uop_funct6          = funct6_lsu;

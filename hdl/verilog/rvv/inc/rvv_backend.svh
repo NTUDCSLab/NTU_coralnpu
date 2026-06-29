@@ -246,6 +246,7 @@ typedef enum logic [0:0] {
 typedef struct packed {
 `ifdef TB_SUPPORT
   logic   [`PC_WIDTH-1:0]             uop_pc;
+  logic                               res_updating_end; 
 `endif
   logic   [`FUNCT3_WIDTH-1:0]         uop_funct3;
   FUNCT6_u                            uop_funct6;
@@ -530,6 +531,7 @@ typedef struct packed {
 typedef struct packed {
 `ifdef TB_SUPPORT
   logic   [`PC_WIDTH-1:0]             uop_pc;
+  logic                               res_updating_end; 
 `endif
   logic   [`REGFILE_INDEX_WIDTH-1:0]  w_index;            //wr addr
   W_DATA_TYPE_e                       w_type;             //write type: 0 for VRF, 1 for XRF
@@ -556,6 +558,7 @@ typedef struct packed {
 `ifdef TB_SUPPORT
   logic   [`PC_WIDTH-1:0]             uop_pc;
   logic                               last_uop_valid;
+  logic                               res_updating_end; 
 `endif
   logic                               w_valid;            //entry valid
   logic   [`REGFILE_INDEX_WIDTH-1:0]  w_index;            //wr addr

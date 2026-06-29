@@ -78,7 +78,7 @@ module rvv_backend_fdiv_unit(
   end
   
   // FDIV is busy
-  assign fdiv_busy_c = result_valid && result_ready;
+  assign fdiv_busy_c = result_valid && result_ready || trap_flush_rvv;
   assign fdiv_valid  = !fdiv_busy && fdiv_uop_valid && (&fdiv_ready);
   // ready to receive
   assign fdiv_uop_ready = fdiv_valid;

@@ -1749,6 +1749,72 @@ module rvv_backend_decode_unit_ari
                   end
                 endcase
               end
+              VFWCVTFXU,
+              VFWCVTFX: begin
+                case(reduced_lmul)
+                  LMUL1: uop_index_max = (`UOP_INDEX_WIDTH)'('d1);
+                  LMUL2: uop_index_max = (`UOP_INDEX_WIDTH)'('d3);
+                  LMUL4: uop_index_max = (`UOP_INDEX_WIDTH)'('d7);
+                endcase
+
+                case(csr_lmul)
+                  LMUL1_4,
+                  LMUL1_2: begin
+                    emul_vd     = EMUL1;
+                    emul_vs2    = EMUL1;
+                    emul_max    = EMUL1;
+                  end
+                  LMUL1: begin
+                    emul_vd     = EMUL2;
+                    emul_vs2    = EMUL1;
+                    emul_max    = EMUL2;
+                  end
+                  LMUL2: begin
+                    emul_vd     = EMUL4;
+                    emul_vs2    = EMUL2;
+                    emul_max    = EMUL4;
+                  end
+                  LMUL4: begin
+                    emul_vd     = EMUL8;
+                    emul_vs2    = EMUL4;
+                    emul_max    = EMUL8;
+                  end
+                endcase
+              end
+              VFNCVTXUF,
+              VFNCVTXF,
+              VFNCVTRTZXUF,
+              VFNCVTRTZXF: begin
+                case(reduced_lmul)
+                  LMUL1: uop_index_max = (`UOP_INDEX_WIDTH)'('d1);
+                  LMUL2: uop_index_max = (`UOP_INDEX_WIDTH)'('d3);
+                  LMUL4: uop_index_max = (`UOP_INDEX_WIDTH)'('d7);
+                endcase
+
+                case(csr_lmul)
+                  LMUL1_4,
+                  LMUL1_2: begin
+                    emul_vd     = EMUL1;
+                    emul_vs2    = EMUL1;
+                    emul_max    = EMUL1;
+                  end
+                  LMUL1: begin
+                    emul_vd     = EMUL1;
+                    emul_vs2    = EMUL2;
+                    emul_max    = EMUL2;
+                  end
+                  LMUL2: begin
+                    emul_vd     = EMUL2;
+                    emul_vs2    = EMUL4;
+                    emul_max    = EMUL4;
+                  end
+                  LMUL4: begin
+                    emul_vd     = EMUL4;
+                    emul_vs2    = EMUL8;
+                    emul_max    = EMUL8;
+                  end
+                endcase
+              end
             endcase
           end
 
