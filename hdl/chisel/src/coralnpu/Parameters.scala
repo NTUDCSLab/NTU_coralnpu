@@ -86,10 +86,10 @@ class Parameters(var m: Seq[MemoryRegion] = Seq(), val hartId: Int = 0, val xlen
   // the ROB in mini mode (enableVerification = false) to avoid the hangs.
   // Thus, we keep these parameters decoupled.
   // Expose the debug/trace ports at the module boundary.
-  var exposeDebugPorts = false
+  var rawExposeDebugPorts = false
 
   // Expose ports if explicitly requested, or automatically if full verification is enabled.
-  def shouldExposeDebugPorts: Boolean = { exposeDebugPorts || enableVerification }
+  def shouldExposeDebugPorts: Boolean = { rawExposeDebugPorts || enableVerification }
 
   // Enable RVV. This conforms to the RVV1.0 specification.
   var enableRvv = false
