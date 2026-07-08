@@ -162,7 +162,18 @@ utils/run_linters.sh            # verilog/scala/python/shell linters used in CI
 | Lint | `utils/run_linters.sh` |
 
 More: [`doc/simulation.md`](doc/simulation.md) · [`doc/integration_guide.md`](doc/integration_guide.md) ·
-[`doc/tutorials/`](doc/tutorials/) · [`tests/uvm/README.md`](tests/uvm/README.md)
+[`doc/tutorials/`](doc/tutorials/) · [`tests/uvm/README.md`](tests/uvm/README.md) ·
+[Integrating a new IP](doc/tutorials/integrating_new_ip.md)
+
+## Extending Coral NPU — add your own IP
+
+Adding a compute accelerator (CNN / MatMul / GEMM engine), a custom vector/tensor instruction, or a
+small SIMD ALU op? The step-by-step guide below covers **which files to change and how**, with
+copy-pasteable code for all three integration paths — a memory-mapped **bus device (MMIO + DMA)**, a
+**custom RVV instruction / backend** extension, and an **in-core functional unit** — plus how to
+build, test (cocotb), and drive the IP from firmware:
+
+**→ [`doc/tutorials/integrating_new_ip.md`](doc/tutorials/integrating_new_ip.md)**
 
 
 ![](doc/images/Coral_Logo_200px-2x.png)
