@@ -228,7 +228,9 @@ class SoCChiselConfig(itcmSize: MemorySize, dtcmSize: MemorySize) {
       params = CnnAccelParameters(hostDataBits = 128, deviceDataBits = 32),
       hostConnections = Map("io.tl_host" -> "cnn_accel"),
       deviceConnections = Map("io.tl_device" -> "cnn_accel"),
-      externalPorts = Seq.empty
+      externalPorts = Seq(
+        ExternalPort("cnn_irq", Bool, Out, "io.irq")
+      )
     ),
     ChiselModuleConfig(
       name = "spi_master_flash",

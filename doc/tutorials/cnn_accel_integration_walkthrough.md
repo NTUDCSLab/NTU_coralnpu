@@ -6,41 +6,47 @@ Coral NPU SoC via **Path A (MMIO + DMA)**. It follows the recipe in
 
 > **Result:** the engine elaborates into `CoralNPUChiselSubsystem.sv`, is wired into the
 > TL-UL crossbar, and a cocotb test drives it end to end —
-> `test_cnn_dot_product` produces **`result = 115`** = `[1,2,3,4,5]·[5,6,7,8,9]`, verified
-> via both the `RESULT` CSR and the DMA-written value in SRAM. **2/2 tests pass on Verilator.**
+> `test_cnn_int8_dot_product` produces **`result = 0xffffffd7` (−41)** = the signed int8 dot
+> product `[1,-2,3,-4,5,6]·[-1,2,-3,4,5,-6]`, verified via both the `RESULT` CSR and the
+> DMA-written value in SRAM, plus the `irq` line asserting on done and clearing on W1C.
+> **2/2 tests pass on Verilator.**
 
 ---
 
 ## 1. What we built
 
-`CnnAccel` is a minimal but genuine CNN/GEMM primitive: a **length-`LEN` integer dot product**
+`CnnAccel` is a minimal but genuine CNN/GEMM primitive: a **length-`LEN` signed int8 dot product**
 (multiply-accumulate) — the kernel at the heart of convolution and matmul:
 
 ```
-RESULT = sum_{i=0..LEN-1} IN[i] * W[i]        (uint32 MAC)
+RESULT = sum_{i=0..LEN-1} (int8)IN[i] * (int8)W[i]        (int32 accumulator)
 ```
 
-It is a TileLink-UL **bus device** shaped exactly like `DmaEngine`:
+Operands are packed **4 signed int8 per 32-bit word** (lane `j` at bits `[8j+7:8j]`), so each beat
+does a 4-lane MAC — the shape of a real int8 inner loop. `LEN` counts int8 elements; a final
+partial word is **lane-masked**. It is a TileLink-UL **bus device** shaped exactly like `DmaEngine`:
 
-- a **CSR slave** (`tl_device`) the core writes to configure and kick it, and
-- a **bus master** (`tl_host`) that DMA-reads the operands and DMA-writes the result.
+- a **CSR slave** (`tl_device`) the core writes to configure and kick it,
+- a **bus master** (`tl_host`) that DMA-reads the operands and DMA-writes the result, and
+- an **`irq`** output (level = `done && IRQ_EN`) so the core can be interrupted instead of polling.
 
 **CSR map** (base `0x40060000`, the free 4 KB slot between `dma` @ `0x40050000` and
 `spi_master_flash` @ `0x40070000`):
 
 | Offset | Reg | Access | Meaning |
 |---|---|---|---|
-| `0x00` | CTRL | W | bit0 = GO (write 1 to start) |
+| `0x00` | CTRL | W | bit0 = GO, bit1 = IRQ_EN, bit2 = CLEAR (W1C done/irq) |
 | `0x04` | STATUS | RO | bit0 busy, bit1 done, bit2 error |
 | `0x08` | IN_ADDR | RW | activation base address |
 | `0x0c` | W_ADDR | RW | weight base address |
 | `0x10` | OUT_ADDR | RW | result base address |
-| `0x14` | LEN | RW | element count |
-| `0x18` | RESULT | RO | accumulator read-back |
+| `0x14` | LEN | RW | number of int8 elements |
+| `0x18` | RESULT | RO | int32 accumulator read-back |
 
-**Control flow:** firmware/host writes IN/W/OUT/LEN, sets `CTRL.GO`; the engine walks a
-read-in → read-w → MAC loop (`Get` per operand), then `PutFullData` writes the accumulator to
-`OUT_ADDR`, sets `STATUS.done`, and drops `busy`.
+**Control flow:** firmware/host writes IN/W/OUT/LEN, sets `CTRL.GO` (optionally with `IRQ_EN`);
+the engine walks a read-in → read-w → 4-lane MAC loop (`Get` per operand word), then `PutFullData`
+writes the int32 accumulator to `OUT_ADDR`, sets `STATUS.done`, drops `busy`, and raises `irq` (if
+enabled). The core clears `done`/`irq` with a W1C write to `CTRL.CLEAR`.
 
 ---
 
@@ -86,15 +92,26 @@ Copied `DmaEngine.scala` and kept its exact skeleton, swapping the descriptor lo
   }
   ```
 - **The compute FSM** (`sIdle → sReadInReq/Resp → sReadWReq/Resp → …loop… → sWriteReq/Resp → sDone`)
-  reuses `DmaEngine`'s host request/response pattern verbatim; only the datapath differs:
+  reuses `DmaEngine`'s host request/response pattern verbatim; only the datapath differs — a 4-lane
+  signed int8 MAC with tail-lane masking:
   ```scala
   when(state === sReadWResp && host_d_fire) {
     val w_word = extractWord(host_d_internal.bits.data, cur_w)
-    acc    := (acc + in_word * w_word)(31, 0)   // multiply-accumulate
-    idx    := idx + 1.U
-    cur_in := cur_in + 4.U
-    cur_w  := cur_w + 4.U
+    val rem    = len_reg - (word_idx << 2)          // int8 elements left, incl. this word
+    val lanes = (0 until 4).map { j =>
+      val a     = in_word(8*j+7, 8*j).asSInt         // int8 activation
+      val b     = w_word(8*j+7, 8*j).asSInt          // int8 weight
+      Mux(j.U < rem, a * b, 0.S(16.W))               // mask tail lanes past LEN
+    }
+    acc      := (acc + lanes.reduce(_ +& _))(31, 0).asSInt
+    word_idx := word_idx + 1.U
+    cur_in   := cur_in + 4.U
+    cur_w    := cur_w + 4.U
   }
+  ```
+- **The interrupt** is a level output, cleared W1C:
+  ```scala
+  io.irq := done && irq_en          // exposed as the subsystem pin io_external_ports_cnn_irq
   ```
 - **Reused wholesale from `DmaEngine`:** `sizeMask`, the byte-offset `extractWord` shift, the host A
   channel builder (`opcode`/`size`/`mask`/`user.instr_type := MuBi4.False`), the four `Queue`s, and
@@ -150,8 +167,15 @@ ChiselModuleConfig(
   params = CnnAccelParameters(hostDataBits = 128, deviceDataBits = 32),
   hostConnections   = Map("io.tl_host"   -> "cnn_accel"),
   deviceConnections = Map("io.tl_device" -> "cnn_accel"),
-  externalPorts = Seq.empty)
+  externalPorts = Seq(
+    ExternalPort("cnn_irq", Bool, Out, "io.irq")))    // -> io_external_ports_cnn_irq pin
 ```
+
+> **Interrupt wiring:** the `ExternalPort` above surfaces `io.irq` as a top-level subsystem pin
+> (`io_external_ports_cnn_irq`), auto-wired by the generic external-ports loop. To have the core
+> actually *take* the interrupt, route that pin into a PLIC source at the SoC top (the PLIC's
+> `io.srcs` is an external input today), or add an explicit internal connection in the subsystem
+> like the CLINT/PLIC block. The cocotb test verifies the device pin directly.
 
 ### Step 5 — the load-bearing match arm (`hdl/chisel/src/soc/CoralNPUChiselSubsystem.scala`)
 
@@ -174,18 +198,23 @@ the config maps. No per-module wiring.
 
 ### Step 6 — the test (`tests/cocotb/tlul/{test_cnn_accel.py,BUILD}`)
 
-A cocotb suite mirroring `dma_integration_cocotb`, driving from `test_host_32`:
+A cocotb suite mirroring `dma_integration_cocotb`, driving from `test_host_32`. Operands are packed
+4 signed int8 per word (`pack4`), with garbage in the masked tail lanes to prove masking:
 
 ```python
-# preload operands into SRAM, program CSRs, kick, poll, verify
-for i, v in enumerate(in_vals):  await tl_write(host_if, in_addr + i*4, v)
-for i, v in enumerate(w_vals):   await tl_write(host_if, w_addr  + i*4, v)
+# LEN=6 int8 -> 2 words; lanes 6,7 hold garbage that must be ignored
+for word in range(2):
+    await tl_write(host_if, in_addr + word*4, pack4(in_padded[word*4:word*4+4]))
+    await tl_write(host_if, w_addr  + word*4, pack4(w_padded[word*4:word*4+4]))
 await tl_write(host_if, CNN_IN_ADDR, in_addr);  await tl_write(host_if, CNN_W_ADDR, w_addr)
-await tl_write(host_if, CNN_OUT_ADDR, out_addr); await tl_write(host_if, CNN_LEN, n)
-await tl_write(host_if, CNN_CTRL, 0x1)                       # GO
-status = await poll_done(host_if)
-assert await tl_read(host_if, CNN_RESULT) == expected        # CSR readback
+await tl_write(host_if, CNN_OUT_ADDR, out_addr); await tl_write(host_if, CNN_LEN, 6)
+await tl_write(host_if, CNN_CTRL, CTRL_GO | CTRL_IRQ_EN)     # kick, interrupt enabled
+await poll_done(host_if)
+assert await tl_read(host_if, CNN_RESULT) == expected        # int32 CSR readback (0xFFFFFFD7)
 assert await tl_read(host_if, out_addr)  == expected         # DMA-written to memory
+assert irq_value(dut) == 1                                   # irq asserted on done
+await tl_write(host_if, CNN_CTRL, CTRL_CLEAR | CTRL_IRQ_EN)  # W1C clear
+assert irq_value(dut) == 0                                   # irq deasserts
 ```
 
 ---
@@ -209,9 +238,9 @@ bazel build //hdl/chisel/src/soc:coralnpu_chisel_subsystem_cc_library_emit_veril
 # (c) build the Verilator testharness + run the cocotb tests
 bazel test \
   //tests/cocotb/tlul:cnn_accel_integration_cocotb_test_cnn_csr_access \
-  //tests/cocotb/tlul:cnn_accel_integration_cocotb_test_cnn_dot_product
-#   -> test_cnn_csr_access   PASS
-#   -> test_cnn_dot_product  PASS   (result = 115)
+  //tests/cocotb/tlul:cnn_accel_integration_cocotb_test_cnn_int8_dot_product
+#   -> test_cnn_csr_access        PASS
+#   -> test_cnn_int8_dot_product  PASS   (result = 0xffffffd7 = -41; irq asserted then cleared)
 #   -> Executed 2 out of 2 tests: 2 tests pass.
 ```
 
@@ -237,16 +266,17 @@ bazel test \
 
 ## 6. Where to take it next
 
-This engine is a scalar-output dot product — deliberately simple to keep the first integration
-correct and verifiable. Real CNN/GEMM extensions, all *inside `CnnAccel.scala`* with **no further SoC
-changes** (the bus interface is done):
+This engine already does **signed int8×int8 → int32** MAC (4 lanes/beat, tail-masked) and raises an
+**interrupt on done**. Further CNN/GEMM extensions, all *inside `CnnAccel.scala`* with **no further
+SoC changes** (the bus interface is done):
 
-- **Tiling / output vectors:** loop the MAC over output channels, `PutFullData` a burst of results.
-- **int8 × int8 → int32** with signed arithmetic and per-channel bias/requant.
-- **Wider datapath:** issue larger `Get`s (`size` > 2) to stream multiple elements per beat and add a
-  small MAC array (the host port is already 128-bit).
-- **Interrupt on done:** add an `ExternalPort` for an IRQ line and wire it to the PLIC (see the
-  CLINT/PLIC block in the subsystem) instead of polling `STATUS`.
+- **Tiling / output vectors:** loop the MAC over output channels, `PutFullData` a burst of results;
+  add per-channel bias + requantize (shift/clamp back to int8).
+- **Wider datapath / MAC array:** issue larger `Get`s (`size` > 2) to stream a full 128-bit beat
+  (16 int8) per access and widen the lane count — the host port is already 128-bit.
+- **Deliver the interrupt to the core:** route `io_external_ports_cnn_irq` into a PLIC source (top
+  level or an internal subsystem edge) and validate with a firmware ISR (see
+  `tests/cocotb/timer_interrupt_test.cc` for the pattern).
 
 For the general recipe and the other two integration paths (custom RVV instruction; in-core
 functional unit), see [`integrating_new_ip.md`](integrating_new_ip.md).

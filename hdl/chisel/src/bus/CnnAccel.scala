@@ -23,24 +23,28 @@ import coralnpu.Parameters
  * CnnAccel — a minimal CNN/MatMul compute accelerator, integrated as a
  * TileLink-UL bus device (Path A: MMIO + DMA).
  *
- * It computes a length-`LEN` integer dot product (the fundamental conv / GEMM
- * primitive):
+ * It computes a length-`LEN` **signed int8** dot product (the conv / GEMM MAC
+ * primitive), streaming 4 packed int8 lanes per 32-bit beat:
  *
- *     RESULT = sum_{i=0..LEN-1} IN[i] * W[i]        (uint32 MAC, truncated)
+ *     RESULT = sum_{i=0..LEN-1} (int8)IN[i] * (int8)W[i]     (int32 accumulator)
  *
- * Control is via a memory-mapped CSR block (the `tl_device` slave); the engine
- * streams the IN/W operands and writes the result over its own bus-master port
- * (`tl_host`). Structure intentionally mirrors `DmaEngine.scala` so the same
- * host A/D request pattern and device CSR read/write pattern are reused.
+ * IN/W are packed 4 int8 values per 32-bit word (lane j at bits [8j+7:8j]).
+ * `LEN` counts int8 elements; a final partial word is lane-masked. The engine
+ * reads the operands and writes the int32 result over its bus-master port; the
+ * scalar core configures/kicks it via CSRs and either polls STATUS or takes the
+ * `irq` interrupt.
  *
- * CSR map (32-bit registers, base set in CrossbarConfig, default 0x40060000):
- *   0x00 CTRL     [w]  bit0 = GO (write 1 to start)
+ * CSR map (32-bit registers, base default 0x40060000):
+ *   0x00 CTRL     [w]  bit0 = GO, bit1 = IRQ_EN, bit2 = CLEAR (W1C done/irq)
  *   0x04 STATUS   [ro] bit0 = busy, bit1 = done, bit2 = error
- *   0x08 IN_ADDR  [rw] activation base address in memory
- *   0x0c W_ADDR   [rw] weight base address in memory
- *   0x10 OUT_ADDR [rw] result base address in memory
- *   0x14 LEN      [rw] number of int32 elements
- *   0x18 RESULT   [ro] accumulator read-back
+ *   0x08 IN_ADDR  [rw] activation base address
+ *   0x0c W_ADDR   [rw] weight base address
+ *   0x10 OUT_ADDR [rw] result base address
+ *   0x14 LEN      [rw] number of int8 elements
+ *   0x18 RESULT   [ro] int32 accumulator read-back
+ *
+ * `io.irq` is a level interrupt (= done && IRQ_EN); route it to a PLIC source
+ * at the SoC level.
  */
 class CnnAccel(hostParams: Parameters, deviceParams: Parameters) extends Module {
   val hostTlulP   = new TLULParameters(hostParams)
@@ -49,6 +53,7 @@ class CnnAccel(hostParams: Parameters, deviceParams: Parameters) extends Module 
   val io = IO(new Bundle {
     val tl_host   = new OpenTitanTileLink.Host2Device(hostTlulP)            // bus master
     val tl_device = Flipped(new OpenTitanTileLink.Host2Device(deviceTlulP)) // CSR slave
+    val irq       = Output(Bool())                                         // level interrupt
   })
 
   // --- Internal queued channels (mirror DmaEngine) ---
@@ -91,19 +96,23 @@ class CnnAccel(hostParams: Parameters, deviceParams: Parameters) extends Module 
   val in_addr  = RegInit(0.U(32.W))
   val w_addr   = RegInit(0.U(32.W))
   val out_addr = RegInit(0.U(32.W))
-  val len_reg  = RegInit(0.U(24.W))
+  val len_reg  = RegInit(0.U(24.W)) // number of int8 elements
 
   // Status / compute state
-  val go      = RegInit(false.B)
-  val busy    = RegInit(false.B)
-  val done    = RegInit(false.B)
-  val idx     = RegInit(0.U(24.W))
-  val acc     = RegInit(0.U(32.W))
-  val in_word = RegInit(0.U(32.W))
-  val cur_in  = RegInit(0.U(32.W))
-  val cur_w   = RegInit(0.U(32.W))
+  val go       = RegInit(false.B)
+  val irq_en   = RegInit(false.B)
+  val busy     = RegInit(false.B)
+  val done     = RegInit(false.B)
+  val word_idx = RegInit(0.U(24.W))
+  val acc      = RegInit(0.S(32.W))
+  val in_word  = RegInit(0.U(32.W)) // 4 packed int8 activations
+  val cur_in   = RegInit(0.U(32.W))
+  val cur_w    = RegInit(0.U(32.W))
 
   val dev_d_reg = RegInit(MakeInvalid(new CnnDevD))
+
+  // Number of 32-bit words = ceil(LEN / 4).
+  val num_words = (len_reg + 3.U) >> 2
 
   // --- Device port CSR decode ---
   val dev_addr_offset                    = dev_a_internal.bits.address(11, 0)
@@ -118,14 +127,12 @@ class CnnAccel(hostParams: Parameters, deviceParams: Parameters) extends Module 
   val host_a_fire = host_a_internal.fire
   val host_d_fire = host_d_internal.fire
   val start       = (state === sIdle) && go
-  val last        = (idx + 1.U) === len_reg
+  val last        = (word_idx + 1.U) === num_words
 
-  // Byte-offset word extract from a wide host beat (mirror DmaEngine data_buf logic).
   val offBits = log2Ceil(hostTlulP.w)
   def extractWord(beat: UInt, addr: UInt): UInt =
     (beat >> (addr(offBits - 1, 0) << 3))(31, 0)
 
-  // Mask for a given size (log2 bytes), as in DmaEngine.
   def sizeMask(size: UInt): UInt = {
     val maxBytes = hostTlulP.w
     MuxLookup(size, ((1 << maxBytes) - 1).U)(
@@ -137,24 +144,30 @@ class CnnAccel(hostParams: Parameters, deviceParams: Parameters) extends Module 
   state := MuxCase(
     state,
     Seq(
-      (state === sIdle && start)                -> Mux(len_reg === 0.U, sWriteReq, sReadInReq),
-      (state === sReadInReq && host_a_fire)     -> sReadInResp,
-      (state === sReadInResp && host_d_fire)    -> sReadWReq,
-      (state === sReadWReq && host_a_fire)      -> sReadWResp,
-      (state === sReadWResp && host_d_fire)     -> Mux(last, sWriteReq, sReadInReq),
-      (state === sWriteReq && host_a_fire)      -> sWriteResp,
-      (state === sWriteResp && host_d_fire)     -> sDone,
-      (state === sDone)                         -> sIdle
+      (state === sIdle && start)             -> Mux(len_reg === 0.U, sWriteReq, sReadInReq),
+      (state === sReadInReq && host_a_fire)  -> sReadInResp,
+      (state === sReadInResp && host_d_fire) -> sReadWReq,
+      (state === sReadWReq && host_a_fire)   -> sReadWResp,
+      (state === sReadWResp && host_d_fire)  -> Mux(last, sWriteReq, sReadInReq),
+      (state === sWriteReq && host_a_fire)   -> sWriteResp,
+      (state === sWriteResp && host_d_fire)  -> sDone,
+      (state === sDone)                      -> sIdle
     )
   )
 
-  // --- go / busy / done ---
-  val ctrl_go_wr = dev_wr && (dev_addr_reg === CTRL) && dev_a_internal.bits.data(0)
-  when(start)           { go := false.B }
+  // --- control decode ---
+  val ctrl_wr    = dev_wr && (dev_addr_reg === CTRL)
+  val ctrl_go_wr = ctrl_wr && dev_a_internal.bits.data(0)
+  val ctrl_clr   = ctrl_wr && dev_a_internal.bits.data(2)
+  when(ctrl_wr) { irq_en := dev_a_internal.bits.data(1) }
+  when(start)     { go := false.B }
     .elsewhen(ctrl_go_wr) { go := true.B }
 
-  when(start)              { busy := true.B; done := false.B }
+  when(start)                { busy := true.B; done := false.B }
     .elsewhen(state === sDone) { busy := false.B; done := true.B }
+    .elsewhen(ctrl_clr)        { done := false.B }
+
+  io.irq := done && irq_en
 
   // --- config registers ---
   when(dev_wr && dev_addr_reg === IN_ADDR)  { in_addr  := dev_a_internal.bits.data }
@@ -162,22 +175,30 @@ class CnnAccel(hostParams: Parameters, deviceParams: Parameters) extends Module 
   when(dev_wr && dev_addr_reg === OUT_ADDR) { out_addr := dev_a_internal.bits.data }
   when(dev_wr && dev_addr_reg === LEN)      { len_reg  := dev_a_internal.bits.data }
 
-  // --- compute datapath ---
+  // --- compute datapath: 4-lane signed int8 MAC ---
   when(start) {
-    idx    := 0.U
-    acc    := 0.U
-    cur_in := in_addr
-    cur_w  := w_addr
+    word_idx := 0.U
+    acc      := 0.S
+    cur_in   := in_addr
+    cur_w    := w_addr
   }
   when(state === sReadInResp && host_d_fire) {
     in_word := extractWord(host_d_internal.bits.data, cur_in)
   }
   when(state === sReadWResp && host_d_fire) {
     val w_word = extractWord(host_d_internal.bits.data, cur_w)
-    acc    := (acc + in_word * w_word)(31, 0)
-    idx    := idx + 1.U
-    cur_in := cur_in + 4.U
-    cur_w  := cur_w + 4.U
+    val rem    = len_reg - (word_idx << 2) // int8 elements remaining incl. this word
+    val lanes = (0 until 4).map { j =>
+      val a     = in_word(8 * j + 7, 8 * j).asSInt // int8 activation
+      val b     = w_word(8 * j + 7, 8 * j).asSInt  // int8 weight
+      val valid = j.U < rem
+      Mux(valid, a * b, 0.S(16.W))
+    }
+    val dot4 = lanes.reduce(_ +& _)
+    acc      := (acc + dot4)(31, 0).asSInt
+    word_idx := word_idx + 1.U
+    cur_in   := cur_in + 4.U
+    cur_w    := cur_w + 4.U
   }
 
   // --- host A channel ---
@@ -197,7 +218,7 @@ class CnnAccel(hostParams: Parameters, deviceParams: Parameters) extends Module 
   host_a_bits.source  := 0.U
   host_a_bits.address := sel_addr
   host_a_bits.mask    := sizeMask(2.U) << off
-  host_a_bits.data    := acc << (off << 3)
+  host_a_bits.data    := acc.asUInt << (off << 3)
   host_a_bits.user            := 0.U.asTypeOf(host_a_bits.user)
   host_a_bits.user.instr_type := MuBi4.False.asUInt
   host_a_internal.bits := host_a_bits
@@ -209,6 +230,7 @@ class CnnAccel(hostParams: Parameters, deviceParams: Parameters) extends Module 
   // --- device CSR response ---
   val is_ro_reg      = dev_addr_reg.isOneOf(STATUS, RESULT)
   val status_reg_val = Cat(0.U(29.W), 0.U(1.W), done, busy) // [0]=busy [1]=done [2]=error(0)
+  val ctrl_reg_val   = Cat(0.U(30.W), irq_en, 0.U(1.W))     // [1]=irq_en
 
   dev_d_reg := Mux(
     dev_a_internal.fire, {
@@ -221,13 +243,13 @@ class CnnAccel(hostParams: Parameters, deviceParams: Parameters) extends Module 
         !dev_is_write,
         MuxLookup(dev_addr_reg, 0.U)(
           Seq(
-            CTRL     -> Cat(0.U(31.W), go),
+            CTRL     -> ctrl_reg_val,
             STATUS   -> status_reg_val,
             IN_ADDR  -> in_addr,
             W_ADDR   -> w_addr,
             OUT_ADDR -> out_addr,
             LEN      -> Cat(0.U(8.W), len_reg),
-            RESULT   -> acc
+            RESULT   -> acc.asUInt
           )
         ),
         dev_d_reg.bits.data

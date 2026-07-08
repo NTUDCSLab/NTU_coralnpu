@@ -517,7 +517,7 @@ cocotb_test_suite(
 # BEGIN_TESTCASES_FOR_cnn_accel_integration_cocotb
 CNN_ACCEL_INTEGRATION_TESTCASES = [
     "test_cnn_csr_access",
-    "test_cnn_dot_product",
+    "test_cnn_int8_dot_product",
 ]
 # END_TESTCASES_FOR_cnn_accel_integration_cocotb
 
