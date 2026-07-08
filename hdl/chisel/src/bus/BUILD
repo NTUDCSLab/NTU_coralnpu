@@ -32,6 +32,7 @@ chisel_library(
         "Axi.scala",
         "Axi2TLUL.scala",
         "Clint.scala",
+        "CnnAccel.scala",
         "DmaEngine.scala",
         "Plic.scala",
         "GPIO.scala",

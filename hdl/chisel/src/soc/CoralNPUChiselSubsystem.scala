@@ -168,6 +168,14 @@ class CoralNPUChiselSubsystem(val hostParams: Seq[bus.TLULParameters], val devic
           device_p.axi2IdBits = 10
           Module(new bus.DmaEngine(host_p, device_p))
 
+        case p: CnnAccelParameters =>
+          val host_p = new Parameters
+          host_p.lsuDataBits = p.hostDataBits
+          val device_p = new Parameters
+          device_p.lsuDataBits = p.deviceDataBits
+          device_p.axi2IdBits = 10
+          Module(new bus.CnnAccel(host_p, device_p))
+
         case ClintParameters =>
           val clint_p = new Parameters
           clint_p.lsuDataBits = 32
