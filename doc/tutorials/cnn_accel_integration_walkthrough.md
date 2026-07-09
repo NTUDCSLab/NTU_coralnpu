@@ -13,6 +13,11 @@ Coral NPU SoC via **Path A (MMIO + DMA)**. It follows the recipe in
 
 ---
 
+> **This branch (`feat/cnn-accel-sv`) implements the engine in pure SystemVerilog.** Sections 1–6
+> describe the reference implementation + the integration steps (all unchanged here); **§7** covers
+> the pure-SV variant — the logic moves to `hdl/verilog/CnnAccel.sv` behind a thin BlackBox + shim,
+> with the SoC config untouched.
+
 ## 1. What we built
 
 `CnnAccel` is a minimal but genuine CNN/GEMM primitive: a **length-`LEN` signed int8 dot product**
@@ -280,3 +285,63 @@ SoC changes** (the bus interface is done):
 
 For the general recipe and the other two integration paths (custom RVV instruction; in-core
 functional unit), see [`integrating_new_ip.md`](integrating_new_ip.md).
+
+---
+
+## 7. Variant: a pure-SystemVerilog IP (Option A)
+
+Prefer to write the IP in SystemVerilog and keep Chisel out of the *logic*? You can — this branch
+implements the exact same engine that way, with **identical results** (`test_cnn_int8_dot_product`
+still gives `result = 0xffffffd7` = −41; 2/2 on both Verilator and VCS).
+
+What changes:
+
+- **`hdl/verilog/CnnAccel.sv`** — module `CnnAccelImpl`: **100% SystemVerilog** (FSM, int8 MAC, CSR
+  file, IRQ). No behaviour in Chisel.
+- **`hdl/chisel/src/bus/CnnAccel.scala`** — now ~40 lines of *glue only*, no logic:
+  - `CnnAccelImpl` — a `BlackBox with HasBlackBoxResource` that mirrors the SV ports and
+    `addResource("CnnAccel.sv")`.
+  - `CnnAccel` — a thin `Module` shim presenting the normal `io` bundle, piping clock/reset + TL to
+    the BlackBox.
+- **The SoC config is unchanged** — `CrossbarConfig` / `SoCChiselConfig` / the match arm stay exactly
+  as in Steps 3–5. The shim looks like any Chisel module to the generator.
+- **BUILD:** export the `.sv` in `hdl/verilog/BUILD` (`exports_files`) and add it to the `bus` library:
+  ```python
+  # hdl/chisel/src/bus/BUILD  (on chisel_library "bus")
+  resource_strip_prefix = "hdl/verilog",
+  resources = ["//hdl/verilog:CnnAccel.sv"],
+  ```
+
+### Two gotchas that make this fiddly
+
+1. **A BlackBox has no `io` aggregate** — its fields become *top-level* SV ports (`tl_host_a_valid`,
+   not `io_tl_host_a_valid`) and it has **no implicit clock/reset**. The subsystem's dynamic wiring
+   loop looks up `io.tl_host` / `io.clock`, so wiring a *bare* BlackBox fails with
+   `key not found: cnn_accel.io.tl_host`. **Fix:** wrap the BlackBox in a thin `Module` shim (the
+   RVV-backend pattern) that owns the `io` bundle + implicit clock/reset, and pipe them across:
+   ```scala
+   class CnnAccel(hostP: Parameters, devP: Parameters) extends Module {
+     val io   = IO(new Bundle { val tl_host = ...; val tl_device = Flipped(...); val irq = Output(Bool()) })
+     val impl = Module(new CnnAccelImpl(hostP, devP))
+     impl.io.clock := clock
+     impl.io.reset := reset.asAsyncReset
+     io.tl_host        <> impl.io.tl_host
+     impl.io.tl_device <> io.tl_device
+     io.irq := impl.io.irq
+   }
+   ```
+
+2. **The SV port list must match the BlackBox flattening exactly** (name, width, direction) or
+   Verilator/VCS errors on link. Reliable recipe: emit the Chisel version, read the generated
+   `module CnnAccel(...)` port list, **strip the `io_` prefix**, keep `clock`/`reset`, and **add back
+   any port the Module optimised away** — here `tl_device_d_ready`, which firtool DCE'd from the
+   Chisel Module but a BlackBox always keeps (it has no logic to optimise). Then `comm`-diff the
+   emitted `CnnAccelImpl impl (...)` instantiation ports against your `.sv` ports — it must be empty
+   both ways before you Verilate:
+   ```
+   instantiation port count: 51   |   sv port count: 51   |   mismatches: none
+   ```
+
+**Bottom line:** your IP can be 100% SystemVerilog; the only Chisel is a ~40-line BlackBox + shim
+(port list, zero behaviour) plus the same config edits. This is exactly how the 94k-line RVV vector
+backend is attached to the core.

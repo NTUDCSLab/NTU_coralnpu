@@ -17,6 +17,7 @@ load("@rules_hdl//verilog:providers.bzl", "verilog_library")
 exports_files(
     srcs = [
         "ClockGate.sv",
+        "CnnAccel.sv",
         "Sram.v",
         "sram_backdoor.core",
         "Sram_1rw_256x256.v",
