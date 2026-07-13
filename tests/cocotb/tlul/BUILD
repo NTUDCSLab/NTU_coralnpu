@@ -514,6 +514,37 @@ cocotb_test_suite(
     vcs_data = ["//hdl/verilog:dpi_files"],
 )
 
+# BEGIN_TESTCASES_FOR_cnn_accel_integration_cocotb
+CNN_ACCEL_INTEGRATION_TESTCASES = [
+    "test_cnn_csr_access",
+    "test_cnn_int8_dot_product",
+]
+# END_TESTCASES_FOR_cnn_accel_integration_cocotb
+
+cocotb_test_suite(
+    name = "cnn_accel_integration_cocotb",
+    simulators = ["verilator", "vcs"],
+    testcases = CNN_ACCEL_INTEGRATION_TESTCASES,
+    testcases_vname = "CNN_ACCEL_INTEGRATION_TESTCASES",
+    tests_kwargs = {
+        "hdl_toplevel": "CoralNPUChiselSubsystemTestHarness",
+        "waves": True,
+        "seed": "42",
+        "test_module": ["test_cnn_accel.py"],
+        "deps": [
+            "//coralnpu_test_utils:TileLinkULInterface",
+        ],
+        "default_testcase_size": "small",
+        "size": "medium",
+    },
+    verilator_model = "//hdl/chisel/src/soc:coralnpu_chisel_subsystem_testharness_model",
+    vcs_verilog_sources = ["//hdl/chisel/src/soc:coralnpu_chisel_subsystem_testharness_cc_library_verilog"],
+    vcs_build_args = VCS_BUILD_ARGS,
+    vcs_test_args = VCS_TEST_ARGS,
+    vcs_defines = VCS_DEFINES,
+    vcs_data = ["//hdl/verilog:dpi_files"],
+)
+
 # BEGIN_TESTCASES_FOR_gpio_integration_cocotb
 GPIO_INTEGRATION_TESTCASES = [
     "test_gpio_integration",

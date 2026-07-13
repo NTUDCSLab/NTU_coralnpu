@@ -69,6 +69,12 @@ case class DmaParameters(
   deviceDataBits: Int
 ) extends ModuleParameters
 
+/** Parameters for the CnnAccel engine module. */
+case class CnnAccelParameters(
+  hostDataBits: Int,
+  deviceDataBits: Int
+) extends ModuleParameters
+
 /** Parameters for the CLINT module. */
 case object ClintParameters extends ModuleParameters
 /** Parameters for the IspWrapper module. */
@@ -215,6 +221,16 @@ class SoCChiselConfig(itcmSize: MemorySize, dtcmSize: MemorySize) {
       hostConnections = Map("io.tl_host" -> "dma"),
       deviceConnections = Map("io.tl_device" -> "dma"),
       externalPorts = Seq.empty
+    ),
+    ChiselModuleConfig(
+      name = "cnn_accel",
+      moduleClass = "bus.CnnAccel",
+      params = CnnAccelParameters(hostDataBits = 128, deviceDataBits = 32),
+      hostConnections = Map("io.tl_host" -> "cnn_accel"),
+      deviceConnections = Map("io.tl_device" -> "cnn_accel"),
+      externalPorts = Seq(
+        ExternalPort("cnn_irq", Bool, Out, "io.irq")
+      )
     ),
     ChiselModuleConfig(
       name = "spi_master_flash",
