@@ -4,6 +4,10 @@ The `CnnAccel` int8 engine as a self-contained IP: design RTL, SystemVerilog
 testbenches, and a VCS run flow. ASIC-style layout so a junior can drop in their
 own engine and reuse the exact flow.
 
+**What the sample engine does:** [`01_RTL/CnnAccel.md`](01_RTL/CnnAccel.md) — a
+signed int8 dot product (the multiply-accumulate at the heart of conv/matmul),
+exposed as an MMIO + DMA bus device. Read that first to understand what's under test.
+
 ## Layout
 
 ```
