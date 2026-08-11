@@ -20,7 +20,7 @@ import coralnpu.Parameters
 
 /**
  * CnnAccel — "Option A" integration: all logic is hand-written SystemVerilog in
- * hdl/verilog/CnnAccel.sv (module `CnnAccelImpl`). The Chisel here is only glue:
+ * custom_ip/01_RTL/CnnAccel.sv (module `CnnAccelImpl`). The Chisel here is only glue:
  *
  *  - `CnnAccelImpl` is a thin `BlackBox` mirroring the SV module's ports. A
  *    BlackBox's io fields become TOP-LEVEL SV ports (no `io_` prefix), and it has

@@ -57,9 +57,9 @@ chisel_library(
         "//hdl/chisel/src/coralnpu:coralnpu_params",
         "@chipsalliance_rocket_chip//:asyncqueue",
     ],
-    resource_strip_prefix = "hdl/verilog",
+    resource_strip_prefix = "custom_ip/01_RTL",
     resources = [
-        "//hdl/verilog:CnnAccel.sv",
+        "//custom_ip/01_RTL:CnnAccel.sv",
     ],
 )
 

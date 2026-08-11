@@ -201,26 +201,28 @@ Everything else — clock/reset (implicit, via the surrounding `withClockAndRese
 `io.tl_host`/`io.tl_device` connections to the crossbar — is auto-wired by the generic loops from
 the config maps. No per-module wiring.
 
-### Step 6 — the test (`tests/cocotb/tlul/{test_cnn_accel.py,BUILD}`)
+### Step 6 — the testbenches (`custom_ip/`)
 
-A cocotb suite mirroring `dma_integration_cocotb`, driving from `test_host_32`. Operands are packed
-4 signed int8 per word (`pack4`), with garbage in the masked tail lanes to prove masking:
+The IP's testbenches live in the standalone [`custom_ip/`](../../custom_ip/) workspace
+(ASIC-style: `01_RTL/` design, `00_TB/` testbenches + a VCS `run.sh`):
 
-```python
-# LEN=6 int8 -> 2 words; lanes 6,7 hold garbage that must be ignored
-for word in range(2):
-    await tl_write(host_if, in_addr + word*4, pack4(in_padded[word*4:word*4+4]))
-    await tl_write(host_if, w_addr  + word*4, pack4(w_padded[word*4:word*4+4]))
-await tl_write(host_if, CNN_IN_ADDR, in_addr);  await tl_write(host_if, CNN_W_ADDR, w_addr)
-await tl_write(host_if, CNN_OUT_ADDR, out_addr); await tl_write(host_if, CNN_LEN, 6)
-await tl_write(host_if, CNN_CTRL, CTRL_GO | CTRL_IRQ_EN)     # kick, interrupt enabled
-await poll_done(host_if)
-assert await tl_read(host_if, CNN_RESULT) == expected        # int32 CSR readback (0xFFFFFFD7)
-assert await tl_read(host_if, out_addr)  == expected         # DMA-written to memory
-assert irq_value(dut) == 1                                   # irq asserted on done
-await tl_write(host_if, CNN_CTRL, CTRL_CLEAR | CTRL_IRQ_EN)  # W1C clear
-assert irq_value(dut) == 0                                   # irq deasserts
+- **`00_TB/tb_cnn_accel.sv`** — unit TB: instantiates `CnnAccelImpl` with a small
+  TL-UL CSR master + memory model; checks the signed int8 dot product (`LEN=6`, with
+  garbage in the masked tail lanes to prove masking). Pass → `== PASS: all checks passed ==`.
+- **`00_TB/tb_cnn_chip_sv.sv`** — whole-chip TB: instantiates the emitted
+  `CoralNPUChiselSubsystem`, backdoor-loads firmware (`cnn_chip_test.cc`), boots the
+  Coral core (which programs and runs the engine over the real crossbar), waits for halt.
+
+Run them (pure VCS):
+
+```bash
+cd custom_ip && ./build_coralnpu.sh   # emit the chip SV + firmware
+cd 00_TB && ./run.sh                   # unit + whole-chip on VCS
 ```
+
+> **Reusing this for your own IP:** copy `custom_ip/`, drop your engine into `01_RTL/`,
+> and adapt `00_TB/tb_*.sv` + `cnn_chip_test.cc` to your registers. Full recipe in
+> [`custom_ip/README.md`](../../custom_ip/README.md).
 
 ---
 
