@@ -93,6 +93,23 @@ license-free Verilator flow needs none of this.
 
 ## Building & running
 
+### Custom IP workspace (`custom_ip/`)
+
+The bundled `CnnAccel` example — and any IP you add — builds and runs from its own
+ASIC-style workspace [`custom_ip/`](custom_ip/):
+
+```bash
+cd custom_ip
+./build_coralnpu.sh          # bazel: emit whole-chip SV (-> 01_RTL/) + firmware
+cd 00_TB && ./run.sh          # pure VCS: unit IP testbench + whole-chip testbench
+#   -> == PASS: all checks passed ==            (unit)
+#   -> == PASS: chip halted cleanly ... ==       (whole-chip)
+```
+
+`build_coralnpu.sh` auto-detects `bazel`/`bazelisk`; `run.sh` needs `vcs` on PATH
+(source your VCS env — see above). See [`custom_ip/README.md`](custom_ip/README.md)
+and the [integration checklist](custom_ip/INTEGRATION.md).
+
 ### Verilator — the default, no license required
 
 ```bash
@@ -111,6 +128,9 @@ bazel-bin/tests/verilator_sim/core_mini_axi_sim --binary "$ELF"
 ```bash
 # The AXI scalar core as flattened SystemVerilog — the SoC/ASIC integration handoff
 bazel build //hdl/chisel/src/coralnpu:core_mini_axi_cc_library_emit_verilog
+
+# The whole SoC (with your custom IP) — what custom_ip/build_coralnpu.sh emits
+bazel build //hdl/chisel/src/soc:CoralNPUChiselSubsystem.sv
 ```
 
 ### VCS — RTL simulation (needs the environment above)
@@ -154,6 +174,8 @@ utils/run_linters.sh            # verilog/scala/python/shell linters used in CI
 
 | Goal | Command |
 | --- | --- |
+| **Custom IP: emit chip SV + firmware** | `cd custom_ip && ./build_coralnpu.sh` |
+| **Custom IP: run testbenches (VCS)** | `cd custom_ip/00_TB && ./run.sh` |
 | Full test suite (Verilator) | `bazel run //tests/cocotb:core_mini_axi_sim_cocotb` |
 | Emit core SystemVerilog | `bazel build //hdl/chisel/src/coralnpu:core_mini_axi_cc_library_emit_verilog` |
 | VCS sim (opt-in) | `bazel build --build_tag_filters= //tests/vcs_sim:core_mini_axi_sim` |
