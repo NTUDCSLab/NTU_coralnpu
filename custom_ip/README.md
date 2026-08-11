@@ -17,12 +17,15 @@ custom_ip/
     CnnAccel.sv              the IP (hand-written SV; also wired into the SoC
                              via the Chisel BlackBox shim)
     CoralNPUChiselSubsystem.sv   GENERATED whole-chip SV (by build_coralnpu.sh)
-  00_TB/                     testbenches + VCS run script
+  00_TB/                     testbenches + VCS run scripts
     tb_cnn_accel.sv          IP unit testbench
-    tb_cnn_chip_sv.sv        whole-chip testbench (CPU boots firmware, drives IP)
-    cnn_chip_test.cc         firmware the chip runs to exercise the IP
+    tb_cnn_chip_sv.sv        whole-chip testbench (fast; releases core via poke)
+    tb_cnn_boot_sv.sv        whole-chip BOOTLOADER testbench (real autoboot, no poke)
+    cnn_chip_test.cc         firmware for tb_cnn_chip_sv (SRAM-mailbox verdict)
+    cnn_boot_test.cc         firmware for tb_cnn_boot_sv (UART verdict)
     run.sh                   VCS runner: ./run.sh [unit|chip|both]
-    BUILD                    firmware build target (coralnpu_v2_binary)
+    run_bootloader.sh        VCS runner for the bootloader TB
+    BUILD                    firmware build targets (coralnpu_v2_binary)
 ```
 
 ## Flow
@@ -51,6 +54,30 @@ cd 00_TB && ./run.sh          # both; or ./run.sh unit / ./run.sh chip
 Both are pure SystemVerilog driven by VCS; the whole-chip TB links the
 `sram_backdoor` DPI (from `hdl/verilog/`) to load firmware and boots the core by
 poking its reset register (`dut.rvv_core.coreAxi.csr.resetReg = 0`).
+
+### The bootloader testbench (gate-portable boot)
+
+`tb_cnn_chip_sv.sv` releases the core with a **hierarchical poke**, which is fine
+for RTL but doesn't survive synthesis. **`tb_cnn_boot_sv.sv`** boots the chip the
+way silicon does instead:
+
+- a reproduced **`autoboot`** host (from `fpga/rtl/autoboot.sv`) releases the core
+  by writing the reset CSR (`0x30000`) over **real TL-UL with correct SECDED
+  integrity** — no poke;
+- it models the peripherals the boot path touches: a **mock DRAM** (AXI slave on
+  `ddr_mem`), a **clk_table** device (so `uart_init()` gets a clock frequency), and
+  a **UART1 BFM** that captures the verdict;
+- the firmware (`cnn_boot_test.cc`) drives CnnAccel and prints over **UART**.
+
+```bash
+./build_coralnpu.sh          # emit chip SV (once)
+cd 00_TB && ./run_bootloader.sh
+#   -> CnnAccel RESULT = FFFFFFD7 (-41) ; TEST PASSED
+#   -> == PASS: CnnAccel bootloader test (autoboot -> firmware -> UART) ==
+```
+
+Everything stays in `custom_ip/` (the autoboot FSM + SECDED are reproduced in the
+TB); no files under `fpga/` are modified.
 
 ## Adapting to your own IP
 

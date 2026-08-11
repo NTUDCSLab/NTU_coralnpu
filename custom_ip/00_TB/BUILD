@@ -14,3 +14,14 @@ coralnpu_v2_binary(
     name = "cnn_chip_test",
     srcs = ["cnn_chip_test.cc"],
 )
+
+# The CNN firmware for the whole-chip BOOTLOADER test: it drives CnnAccel and
+# prints its verdict over UART, so it is independent of how it's loaded/booted.
+# Built as a plain binary (the coralnpu_v2_sim_test *runner* pulls an FTDI/libftdi1
+# dep that doesn't build here; the ROM-bootloader flow below avoids it). Its ELF is
+# packed into a SPI-flash image and booted by the chip's own ROM bootloader.
+coralnpu_v2_binary(
+    name = "cnn_boot_app",
+    srcs = ["cnn_boot_test.cc"],
+    deps = ["//fpga:uart"],
+)
