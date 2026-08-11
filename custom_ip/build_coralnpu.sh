@@ -17,14 +17,18 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"     # custom_ip/ lives at the repo root
 cd "$REPO"
 
+# Find bazel/bazelisk (falls back to ~/bin, where bazelisk is commonly installed).
+BAZEL="$(command -v bazel || command -v bazelisk || echo "$HOME/bin/bazel")"
+[ -x "$BAZEL" ] || { echo "ERROR: bazel/bazelisk not found. Install bazelisk and put it on PATH (e.g. export PATH=\$HOME/bin:\$PATH)."; exit 1; }
+
 echo "[build_coralnpu] emitting whole-chip RTL (Chisel -> firtool)..."
-bazel build //hdl/chisel/src/soc:CoralNPUChiselSubsystem.sv
+"$BAZEL" build //hdl/chisel/src/soc:CoralNPUChiselSubsystem.sv
 CHIP_SV="$(find -L "$REPO/bazel-bin/hdl/chisel/src/soc" -name CoralNPUChiselSubsystem.sv | head -1)"
 cp -f "$CHIP_SV" "$HERE/01_RTL/CoralNPUChiselSubsystem.sv"
 echo "[build_coralnpu]   -> 01_RTL/CoralNPUChiselSubsystem.sv ($(wc -l < "$HERE/01_RTL/CoralNPUChiselSubsystem.sv") lines)"
 
 echo "[build_coralnpu] building firmware (RISC-V)..."
-bazel build //custom_ip/00_TB:cnn_chip_test.elf
+"$BAZEL" build //custom_ip/00_TB:cnn_chip_test.elf
 ELF="$(find -L "$REPO/bazel-out" -type f -name cnn_chip_test.elf -path '*custom_ip/00_TB*' | head -1)"
 cp -f "$ELF" "$HERE/00_TB/cnn_chip_test.elf"
 echo "[build_coralnpu]   -> 00_TB/cnn_chip_test.elf"
