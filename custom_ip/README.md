@@ -50,6 +50,8 @@ poking its reset register (`dut.rvv_core.coreAxi.csr.resetReg = 0`).
 
 ## Adapting to your own IP
 
+**File-by-file checklist: [`INTEGRATION.md`](INTEGRATION.md).** In short:
+
 1. Replace `01_RTL/CnnAccel.sv` with your engine (keep the Chisel BlackBox shim
    `hdl/chisel/src/bus/CnnAccel.scala` pointing at it — it pulls the SV in via
    `addResource` from `//custom_ip/01_RTL:CnnAccel.sv`).
