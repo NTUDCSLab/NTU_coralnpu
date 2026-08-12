@@ -59,10 +59,27 @@ run_boot() {
   "$HERE/run_bootloader.sh"
 }
 
+run_stream() {
+  echo "=================== WHOLE-CHIP DMA-STREAM-TO-ENGINE ==================="
+  local CHIP="$RTL/CoralNPUChiselSubsystem.sv"
+  local ELF="$HERE/cnn_stream_test.elf"
+  [ -f "$CHIP" ] || { echo "ERROR: $CHIP missing — run ../build_coralnpu.sh first."; exit 1; }
+  [ -f "$ELF" ]  || { echo "ERROR: $ELF missing — run ../build_coralnpu.sh first."; exit 1; }
+  [ -f "$HERE/operands.hex" ] || { echo "ERROR: operands.hex missing — run ../build_coralnpu.sh first."; exit 1; }
+  cd "$WORK"
+  vcs $VCS_COMMON \
+    +define+USE_GENERIC +define+TB_SUPPORT +define+ZVE32F_ON +define+VLEN_128 \
+    "$CHIP" "$HERE/tb_cnn_stream_sv.sv" \
+    "$DPI/sram_backdoor.cc" -CFLAGS "-I$DPI" \
+    -o simv_stream -l stream_compile.log
+  ./simv_stream +binary="$ELF" -l stream_run.log
+}
+
 case "${1:-both}" in
-  unit) run_unit ;;
-  chip) run_chip ;;
-  boot) run_boot ;;
-  both) run_unit; run_chip ;;
-  *) echo "usage: $0 [unit|chip|boot|both]"; exit 1 ;;
+  unit)   run_unit ;;
+  chip)   run_chip ;;
+  boot)   run_boot ;;
+  stream) run_stream ;;
+  both)   run_unit; run_chip ;;
+  *) echo "usage: $0 [unit|chip|boot|stream|both]"; exit 1 ;;
 esac

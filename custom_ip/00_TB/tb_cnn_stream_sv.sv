@@ -5,147 +5,63 @@
 //     http://www.apache.org/licenses/LICENSE-2.0
 //
 // =============================================================================
-// tb_cnn_boot_sv.sv - PURE-SYSTEMVERILOG whole-chip SELF-LOAD testbench (VCS).
+// tb_cnn_stream_sv.sv - PURE-SYSTEMVERILOG whole-chip DMA-STREAMING testbench.
 //
-// Same chip and environment as tb_cnn_chip_sv.sv (all peripheral ports tied off,
-// PASS = the core halts), but instead of DPI-backdoor-loading the firmware we let
-// a HARDWARE AUTOBOOT load it over the real TL-UL bus, like fpga/rtl/autoboot.sv.
+// Same chip + environment as tb_cnn_chip_sv.sv (peripheral ports tied off,
+// backdoor-load the firmware, PASS = the core halts), with the input tensors held
+// in EXTERNAL DDR.  The firmware (cnn_stream_test.cc) uses the general DMA engine
+// to STREAM those tensors out of DDR into on-chip SRAM, then points the CnnAccel
+// at the SRAM buffers -- the "feed an accelerator from DRAM with a DMA" pattern:
 //
-// The fpga autoboot only un-gates + releases the core (2 CSR writes).  This one
-// additionally TRIGGERS THE ON-CHIP DMA to copy the app from external ROM into
-// ITCM before releasing the core -- the whole chip self-loads from external
-// memory, no CPU boot-stub firmware and no SPI:
+//     DDR (this AXI BFM) --(general DMA 0x40050000)--> SRAM --(CnnAccel)--> result
 //
-//   phase 0  write CoreCSR  0x00030000 = 0x1   un-gate core clock, hold in reset
-//   phase 1  write DMA      0x40050008 = 0x10000000   DESC_ADDR (descriptor in ROM)
-//   phase 2  write DMA      0x40050000 = 0x3          CTRL = enable|start  (ROM->ITCM)
-//   phase 3  wait for the DMA to finish (status_done)
-//   phase 4  write CoreCSR  0x00030000 = 0x0   release reset -> core boots ITCM(0x0)
+// DDR (ddr_mem, base 0x80000000) is a 256-bit AXI4 slave on the chip's async "ddr"
+// clock domain.  Unlike the tie-off TBs, we DRIVE that clock and release its reset
+// so the AXI crossing runs, and serve read beats with a small AXI BFM below.
 //
-// Requires the crossbar to let the "autoboot" host reach the DMA:
-//   CrossbarConfig.scala:  "autoboot" -> Seq("coralnpu_device", "dma")
-// Regenerate the chip .sv (../build_coralnpu.sh) after changing it.
+// halted|wfi = PASS, fault = FAIL (cnn_stream_test halts only on the correct
+// result; the fail path spins -> timeout).
 //
-// The app (cnn_chip_test, ITCM-only) halts via ebreak on success, so the pass
-// convention is identical to tb_cnn_chip_sv.sv: halted|wfi = PASS, fault = FAIL.
+// Run (needs the emitted chip .sv + firmware + operands.hex from build_coralnpu.sh):
+//   ../build_coralnpu.sh   then   ./run.sh stream
 // =============================================================================
 `timescale 1ns/1ps
 
-module tb_cnn_boot_sv;
+module tb_cnn_stream_sv;
   reg clk = 1'b0;
   reg rst_ni = 1'b0;
   wire halted, fault, wfi;
 
   always #5 clk = ~clk;   // 100 MHz
 
-  // ================= reproduced autoboot (from fpga/rtl/autoboot.sv) =================
-  // SECDED integrity encoders, identical to the fpga autoboot (a_user.instr_type is
-  // MuBi4False = 4'h9; cmd = {rsvd14, instr_type4, addr32, opcode3, mask4}).
-  function automatic [6:0] secded_39_32(input [31:0] d);
-    secded_39_32[0]=^(d&32'h2606BD25); secded_39_32[1]=^(d&32'hDEBA8050);
-    secded_39_32[2]=^(d&32'h413D89AA); secded_39_32[3]=^(d&32'h31234ED1);
-    secded_39_32[4]=^(d&32'hC2C1323B); secded_39_32[5]=^(d&32'h2DCC624C);
-    secded_39_32[6]=^(d&32'h98505586); secded_39_32=secded_39_32^7'h2A;
-  endfunction
-  function automatic [6:0] secded_64_57(input [56:0] d);
-    secded_64_57[0]=^(d&57'h0103FFF800007FFF); secded_64_57[1]=^(d&57'h017C1FF801FF801F);
-    secded_64_57[2]=^(d&57'h01BDE1F87E0781E1); secded_64_57[3]=^(d&57'h01DEEE3B8E388E22);
-    secded_64_57[4]=^(d&57'h01EF76CDB2C93244); secded_64_57[5]=^(d&57'h01F7BB56D5525488);
-    secded_64_57[6]=^(d&57'h01FBDDA769A46910); secded_64_57=secded_64_57^7'h2A;
-  endfunction
-
-  // Autoboot FSM.  Each bus phase drives the A-channel until a_ready, then awaits
-  // the D-channel ack; the wait phase blocks on the DMA finishing.
-  localparam [2:0] AB_UNGATE=3'd0, AB_DESC=3'd1, AB_START=3'd2,
-                   AB_WAIT=3'd3,  AB_RELEASE=3'd4, AB_DONE=3'd5;
-  reg  [2:0]  ab_phase = AB_UNGATE;
-  reg         ab_sub   = 1'b0;      // 0 = drive A, 1 = await D
-  reg  [31:0] ab_wait  = 32'd0;     // safety counter for the DMA wait
-  wire        ab_a_ready, ab_d_valid;
-  wire [31:0] ab_d_data;
-
-  // The autoboot POLLS the DMA's STATUS register over the bus (a Get to 0x40050004),
-  // exactly as silicon must -- it has no back-door view of the engine.  A response
-  // whose data has bit1(done) or bit2(error) set ends the wait.
-  wire        ab_busy    = (ab_phase != AB_DONE);    // WAIT drives the bus too (the poll)
-  wire        ab_a_valid = ab_busy && (ab_sub == 1'b0);
-  wire [2:0]  ab_a_opcode = (ab_phase == AB_WAIT) ? 3'd4 : 3'd0;  // Get to poll, else PutFullData
-  wire [31:0] ab_a_addr =
-      (ab_phase==AB_UNGATE)  ? 32'h00030000 :        // CoreCSR reset register
-      (ab_phase==AB_DESC)    ? 32'h40050008 :        // DMA DESC_ADDR
-      (ab_phase==AB_START)   ? 32'h40050000 :        // DMA CTRL
-      (ab_phase==AB_WAIT)    ? 32'h40050004 :        // DMA STATUS  (poll target)
-      (ab_phase==AB_RELEASE) ? 32'h00030000 : 32'h00030000;
-  wire [31:0] ab_a_data =
-      (ab_phase==AB_UNGATE)  ? 32'h00000001 :        // un-gate clock, hold reset
-      (ab_phase==AB_DESC)    ? 32'h10000000 :        // descriptor @ ROM base
-      (ab_phase==AB_START)   ? 32'h00000003 :        // CTRL = enable|start
-      (ab_phase==AB_RELEASE) ? 32'h00000000 : 32'h00000000;  // release reset
-  wire [6:0]  ab_cmd_intg  = secded_64_57({14'h0, 4'h9, ab_a_addr, ab_a_opcode, 4'hF});
-  wire [6:0]  ab_data_intg = secded_39_32(ab_a_data);
-
-  always @(posedge clk or negedge rst_ni) begin
+  // ============== DDR (AXI4 read) memory BFM — holds the input tensors ==============
+  // ddr_mem is a 256-bit AXI4 slave at 0x80000000 on the async "ddr" clock domain.
+  // The general DMA reads the operand tensors from here and streams them to SRAM.
+  // read_addr_len is hardwired to 0 upstream, so every read is a single 256-bit
+  // (32-byte) beat -> this BFM only serves the AR and R channels, one at a time.
+  // ../build_coralnpu.sh writes operands.hex: word 0 (0x80000000)=IN, 0x40 (0x80000100)=W.
+  wire         ddr_clk = clk;                  // run the DDR domain at the core clock
+  reg  [31:0]  ddr_word [0:2047];
+  initial $readmemh("../operands.hex", ddr_word);
+  wire         dm_ar_valid, dm_r_ready;        // AR.valid / R.ready  (driven by the chip)
+  wire [31:0]  dm_ar_addr;
+  wire         dm_ar_id;
+  reg          dm_r_valid = 1'b0;              // R.valid / R.data    (driven by this BFM)
+  reg          dm_r_id;
+  reg  [255:0] dm_r_data;
+  wire         dm_ar_ready = !dm_r_valid;      // single outstanding: accept AR when R idle
+  wire [12:0]  ddr_off = dm_ar_addr[12:0];     // low 8 KB is plenty for the operands
+  wire [10:0]  wb      = {ddr_off[12:5], 3'b000};  // 32-byte-line-aligned word base (8 words)
+  always @(posedge ddr_clk or negedge rst_ni) begin
     if (!rst_ni) begin
-      ab_phase <= AB_UNGATE; ab_sub <= 1'b0; ab_wait <= 32'd0;
-    end else begin
-      case (ab_phase)
-        AB_WAIT: begin                                 // poll DMA_STATUS over the bus (Get)
-          ab_wait <= ab_wait + 32'd1;
-          if (ab_sub == 1'b0) begin
-            if (ab_a_ready) ab_sub <= 1'b1;            // poll request accepted
-          end else if (ab_d_valid) begin
-            ab_sub <= 1'b0;                            // ack seen -> re-poll, unless...
-            if (|ab_d_data[2:1] || ab_wait > 32'd500000) ab_phase <= AB_RELEASE; // done|error
-          end
-        end
-        AB_DONE: ;
-        default: begin                                 // a bus-write phase
-          if (ab_sub == 1'b0) begin
-            if (ab_a_ready) ab_sub <= 1'b1;
-          end else if (ab_d_valid) begin
-            ab_sub <= 1'b0;
-            case (ab_phase)
-              AB_UNGATE:  ab_phase <= AB_DESC;
-              AB_DESC:    ab_phase <= AB_START;
-              AB_START:   ab_phase <= AB_WAIT;
-              AB_RELEASE: ab_phase <= AB_DONE;
-              default:    ;
-            endcase
-          end
-        end
-      endcase
-    end
-  end
-
-  // ================= ROM device BFM =================
-  // Holds [DMA descriptor @ 0x10000000][app @ 0x10001000].  The core is held during
-  // the copy, so the ROM sees only the DMA's single read stream -- a simple
-  // single-outstanding responder suffices (no cross-stream throttle, no deadlock).
-  reg  [31:0] rom_mem [0:8191];
-  initial $readmemh("../rom_boot.hex", rom_mem);
-  wire        r_a_valid, r_d_ready;
-  wire [2:0]  r_a_opcode;
-  wire [1:0]  r_a_size;
-  wire [9:0]  r_a_source;
-  wire [31:0] r_a_addr;
-  reg         r_d_valid = 1'b0;
-  reg  [2:0]  r_d_opcode;
-  reg  [1:0]  r_d_size;
-  reg  [9:0]  r_d_source;
-  reg  [31:0] r_d_data;
-  wire        r_a_ready = !r_d_valid;                    // accept when not holding a resp
-  wire [6:0]  r_d_data_intg = secded_39_32(r_d_data);
-  always @(posedge clk or negedge rst_ni) begin
-    if (!rst_ni) begin
-      r_d_valid <= 1'b0;
-    end else if (r_a_valid && r_a_ready) begin
-      r_d_valid  <= 1'b1;
-      r_d_data   <= rom_mem[(r_a_addr & 32'h00007FFF) >> 2];
-      r_d_opcode <= (r_a_opcode == 3'd4) ? 3'd1 : 3'd0;  // AccessAckData / AccessAck
-      r_d_size   <= r_a_size;
-      r_d_source <= r_a_source;
-    end else if (r_d_valid && r_d_ready) begin
-      r_d_valid <= 1'b0;
+      dm_r_valid <= 1'b0;
+    end else if (dm_ar_valid && dm_ar_ready) begin
+      dm_r_valid <= 1'b1;
+      dm_r_id    <= dm_ar_id;
+      dm_r_data  <= {ddr_word[wb+11'd7], ddr_word[wb+11'd6], ddr_word[wb+11'd5], ddr_word[wb+11'd4],
+                     ddr_word[wb+11'd3], ddr_word[wb+11'd2], ddr_word[wb+11'd1], ddr_word[wb]};
+    end else if (dm_r_valid && dm_r_ready) begin
+      dm_r_valid <= 1'b0;
     end
   end
 
@@ -155,32 +71,31 @@ module tb_cnn_boot_sv;
     .io_rst_ni(rst_ni),
     .io_async_ports_hosts_isp_axi_clk_clock(1'b0),
     .io_async_ports_hosts_isp_axi_clk_reset(1'b1),
-    .io_async_ports_devices_ddr_clock(1'b0),
-    .io_async_ports_devices_ddr_reset(1'b1),
+    .io_async_ports_devices_ddr_clock(ddr_clk),      // DRIVE the DDR domain (was tied 0)
+    .io_async_ports_devices_ddr_reset(~rst_ni),      // release it after reset (active-high)
     .io_async_ports_devices_isp_axi_clk_clock(1'b0),
     .io_async_ports_devices_isp_axi_clk_reset(1'b1),
-    // ===== External Host: autoboot (ACTIVE) =====
-    .io_external_hosts_autoboot_a_ready(ab_a_ready),
-    .io_external_hosts_autoboot_a_valid(ab_a_valid),
-    .io_external_hosts_autoboot_a_bits_opcode(ab_a_opcode),
-    .io_external_hosts_autoboot_a_bits_param(3'h0),
-    .io_external_hosts_autoboot_a_bits_size(2'h2),
-    .io_external_hosts_autoboot_a_bits_source(6'h0),
-    .io_external_hosts_autoboot_a_bits_address(ab_a_addr),
-    .io_external_hosts_autoboot_a_bits_mask(4'hF),
-    .io_external_hosts_autoboot_a_bits_data(ab_a_data),
+    .io_external_hosts_autoboot_a_ready(),
+    .io_external_hosts_autoboot_a_valid(1'b0),
+    .io_external_hosts_autoboot_a_bits_opcode('0),
+    .io_external_hosts_autoboot_a_bits_param('0),
+    .io_external_hosts_autoboot_a_bits_size('0),
+    .io_external_hosts_autoboot_a_bits_source('0),
+    .io_external_hosts_autoboot_a_bits_address('0),
+    .io_external_hosts_autoboot_a_bits_mask('0),
+    .io_external_hosts_autoboot_a_bits_data('0),
     .io_external_hosts_autoboot_a_bits_user_rsvd('0),
-    .io_external_hosts_autoboot_a_bits_user_instr_type(4'h9),
-    .io_external_hosts_autoboot_a_bits_user_cmd_intg(ab_cmd_intg),
-    .io_external_hosts_autoboot_a_bits_user_data_intg(ab_data_intg),
+    .io_external_hosts_autoboot_a_bits_user_instr_type('0),
+    .io_external_hosts_autoboot_a_bits_user_cmd_intg('0),
+    .io_external_hosts_autoboot_a_bits_user_data_intg('0),
     .io_external_hosts_autoboot_d_ready(1'b1),
-    .io_external_hosts_autoboot_d_valid(ab_d_valid),
+    .io_external_hosts_autoboot_d_valid(),
     .io_external_hosts_autoboot_d_bits_opcode(),
     .io_external_hosts_autoboot_d_bits_param(),
     .io_external_hosts_autoboot_d_bits_size(),
     .io_external_hosts_autoboot_d_bits_source(),
     .io_external_hosts_autoboot_d_bits_sink(),
-    .io_external_hosts_autoboot_d_bits_data(ab_d_data),
+    .io_external_hosts_autoboot_d_bits_data(),
     .io_external_hosts_autoboot_d_bits_user_rsp_intg(),
     .io_external_hosts_autoboot_d_bits_user_data_intg(),
     .io_external_hosts_autoboot_d_bits_error(),
@@ -280,30 +195,30 @@ module tb_cnn_boot_sv;
     .io_external_devices_uart0_d_bits_user_rsp_intg('0),
     .io_external_devices_uart0_d_bits_user_data_intg('0),
     .io_external_devices_uart0_d_bits_error('0),
-    // ===== External Device: rom (ACTIVE BFM) =====
-    .io_external_devices_rom_a_ready(r_a_ready),
-    .io_external_devices_rom_a_valid(r_a_valid),
-    .io_external_devices_rom_a_bits_opcode(r_a_opcode),
+    // rom device: unused now (tensors live in DDR); tied off.
+    .io_external_devices_rom_a_ready(1'b1),
+    .io_external_devices_rom_a_valid(),
+    .io_external_devices_rom_a_bits_opcode(),
     .io_external_devices_rom_a_bits_param(),
-    .io_external_devices_rom_a_bits_size(r_a_size),
-    .io_external_devices_rom_a_bits_source(r_a_source),
-    .io_external_devices_rom_a_bits_address(r_a_addr),
+    .io_external_devices_rom_a_bits_size(),
+    .io_external_devices_rom_a_bits_source(),
+    .io_external_devices_rom_a_bits_address(),
     .io_external_devices_rom_a_bits_mask(),
     .io_external_devices_rom_a_bits_data(),
     .io_external_devices_rom_a_bits_user_rsvd(),
     .io_external_devices_rom_a_bits_user_instr_type(),
     .io_external_devices_rom_a_bits_user_cmd_intg(),
     .io_external_devices_rom_a_bits_user_data_intg(),
-    .io_external_devices_rom_d_ready(r_d_ready),
-    .io_external_devices_rom_d_valid(r_d_valid),
-    .io_external_devices_rom_d_bits_opcode(r_d_opcode),
+    .io_external_devices_rom_d_ready(),
+    .io_external_devices_rom_d_valid(1'b0),
+    .io_external_devices_rom_d_bits_opcode('0),
     .io_external_devices_rom_d_bits_param('0),
-    .io_external_devices_rom_d_bits_size(r_d_size),
-    .io_external_devices_rom_d_bits_source(r_d_source),
+    .io_external_devices_rom_d_bits_size('0),
+    .io_external_devices_rom_d_bits_source('0),
     .io_external_devices_rom_d_bits_sink('0),
-    .io_external_devices_rom_d_bits_data(r_d_data),
+    .io_external_devices_rom_d_bits_data('0),
     .io_external_devices_rom_d_bits_user_rsp_intg('0),
-    .io_external_devices_rom_d_bits_user_data_intg(r_d_data_intg),
+    .io_external_devices_rom_d_bits_user_data_intg('0),
     .io_external_devices_rom_d_bits_error('0),
     .io_external_ports_ext_intrs('0),
     .io_external_ports_spim_flash_clk_i('0),
@@ -398,11 +313,12 @@ module tb_cnn_boot_sv;
     .io_ddr_mem_axi_write_resp_valid(1'b0),
     .io_ddr_mem_axi_write_resp_bits_id('0),
     .io_ddr_mem_axi_write_resp_bits_resp('0),
-    .io_ddr_mem_axi_read_addr_ready(1'b1),
-    .io_ddr_mem_axi_read_addr_valid(),
-    .io_ddr_mem_axi_read_addr_bits_addr(),
+    // ===== ddr_mem AXI4 READ channel -> active BFM (holds the input tensors) =====
+    .io_ddr_mem_axi_read_addr_ready(dm_ar_ready),
+    .io_ddr_mem_axi_read_addr_valid(dm_ar_valid),
+    .io_ddr_mem_axi_read_addr_bits_addr(dm_ar_addr),
     .io_ddr_mem_axi_read_addr_bits_prot(),
-    .io_ddr_mem_axi_read_addr_bits_id(),
+    .io_ddr_mem_axi_read_addr_bits_id(dm_ar_id),
     .io_ddr_mem_axi_read_addr_bits_len(),
     .io_ddr_mem_axi_read_addr_bits_size(),
     .io_ddr_mem_axi_read_addr_bits_burst(),
@@ -410,12 +326,12 @@ module tb_cnn_boot_sv;
     .io_ddr_mem_axi_read_addr_bits_cache(),
     .io_ddr_mem_axi_read_addr_bits_qos(),
     .io_ddr_mem_axi_read_addr_bits_region(),
-    .io_ddr_mem_axi_read_data_ready(),
-    .io_ddr_mem_axi_read_data_valid(1'b0),
-    .io_ddr_mem_axi_read_data_bits_data('0),
-    .io_ddr_mem_axi_read_data_bits_id('0),
-    .io_ddr_mem_axi_read_data_bits_resp('0),
-    .io_ddr_mem_axi_read_data_bits_last('0),
+    .io_ddr_mem_axi_read_data_ready(dm_r_ready),
+    .io_ddr_mem_axi_read_data_valid(dm_r_valid),
+    .io_ddr_mem_axi_read_data_bits_data(dm_r_data),
+    .io_ddr_mem_axi_read_data_bits_id(dm_r_id),
+    .io_ddr_mem_axi_read_data_bits_resp(2'b00),
+    .io_ddr_mem_axi_read_data_bits_last(1'b1),
     .io_ispyocto_ctrl_a_ready(1'b1),
     .io_ispyocto_ctrl_a_valid(),
     .io_ispyocto_ctrl_a_bits_opcode(),
@@ -520,33 +436,53 @@ module tb_cnn_boot_sv;
     .io_ispyocto_m2_axi_read_data_bits_last()
   );
 
-  // ---- boot + completion ----
-  integer cyc = 0, limit = 3000000;
+  // DPI backdoor ELF loader (address-based, DUT-agnostic; from hdl/verilog/sram_backdoor).
+  import "DPI-C" function void sram_load_elf(input string filepath);
+
+  string binary_path;
+  integer cycles = 0, limit = 2000000;
+
   initial begin
-    rst_ni = 1'b0;                     // hold chip in reset; CoreCSR comes up 0x3 (core held)
+    if (!$value$plusargs("binary=%s", binary_path)) begin
+      $display("FATAL: pass +binary=<cnn_chip_test.elf>"); $finish;
+    end
+    rst_ni = 1'b0;          // hold chip in reset
     #100;
-    rst_ni = 1'b1;                     // release chip reset -> autoboot FSM takes over
-    $display("== tb_cnn_boot_sv: reset released; autoboot -> DMA (ROM->ITCM) -> core ==");
+    sram_load_elf(binary_path);   // load firmware into on-chip SRAMs
+    #20;
+    // Release the core: CoreCSR.resetReg comes up 0x3 (core held); clear it, then
+    // deassert chip reset -- same trick tests/vcs_sim/top.sv uses on the core.
+    dut.rvv_core.coreAxi.csr.resetReg = 32'h0;
+    rst_ni = 1'b1;
+    $display("== tb_cnn_stream_sv: booted; fw streams ROM->SRAM via DMA, then runs CnnAccel ==");
   end
 
+  // Teaching probe: watch the general DMA stream the tensors in.  It goes busy
+  // while copying DDR->SRAM and raises done when the operands are staged; the
+  // firmware then points the CnnAccel at them and the chip eventually halts.
+  reg dma_busy_seen = 1'b0, dma_done_seen = 1'b0;
+  always @(posedge clk) if (rst_ni) begin
+    if (dut.dma.status_busy && !dma_busy_seen) begin
+      dma_busy_seen <= 1'b1;
+      $display("[stream] general DMA busy  @cyc %0d  (streaming tensors DDR -> SRAM)", cycles);
+    end
+    if (dut.dma.status_done && !dma_done_seen) begin
+      dma_done_seen <= 1'b1;
+      $display("[stream] general DMA done  @cyc %0d  (operands staged; CnnAccel takes over)", cycles);
+    end
+  end
+
+  // Completion: halted|wfi = PASS, fault = FAIL, else timeout.
   always @(posedge clk) begin
-    cyc <= cyc + 1;
-    // NOTE: dut.dma.* here is TB-only visibility for the log; the boot control path
-    // does NOT use it -- the autoboot learns "done" by polling DMA_STATUS on the bus.
-    if (cyc % 50000 == 0)
-      $display("[DBG cyc=%0d] ab_phase=%0d sub=%b | dut.dma(busy=%b done=%b) core(halted=%b fault=%b wfi=%b)",
-               cyc, ab_phase, ab_sub, dut.dma.status_busy, dut.dma.status_done, halted, fault, wfi);
+    cycles <= cycles + 1;
     if (rst_ni && (halted || wfi)) begin
-      $display("== PASS: autoboot->DMA self-load complete, chip halted cleanly (cyc=%0d) ==", cyc);
-      $finish;
+      $display("== PASS: DMA-streamed operands, CnnAccel computed correct result, chip halted (cyc=%0d) ==", cycles); $finish;
     end
     if (rst_ni && fault) begin
-      $display("== FAIL: chip raised fault (cyc=%0d) ==", cyc);
-      $finish;
+      $display("== FAIL: chip raised fault =="); $finish;
     end
-    if (cyc >= limit) begin
-      $display("== FAIL: timeout after %0d cycles (self-load or CNN check failed) ==", limit);
-      $finish;
+    if (cycles >= limit) begin
+      $display("== FAIL: timeout after %0d cycles (stream or CNN check failed) ==", limit); $finish;
     end
   end
 endmodule

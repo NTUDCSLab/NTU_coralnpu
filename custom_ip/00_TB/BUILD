@@ -15,6 +15,13 @@ coralnpu_v2_binary(
     srcs = ["cnn_chip_test.cc"],
 )
 
+# Teaching firmware for tb_cnn_stream_sv.sv: streams the input tensors from external
+# ROM into SRAM with the general DMA engine, then runs CnnAccel on them.
+coralnpu_v2_binary(
+    name = "cnn_stream_test",
+    srcs = ["cnn_stream_test.cc"],
+)
+
 # The CNN firmware for the whole-chip BOOTLOADER test: it drives CnnAccel and
 # prints its verdict over UART, so it is independent of how it's loaded/booted.
 # Built as a plain binary (the coralnpu_v2_sim_test *runner* pulls an FTDI/libftdi1
