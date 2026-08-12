@@ -16,7 +16,7 @@ import cocotb
 import numpy as np
 from cocotb.clock import Clock
 from cocotb.queue import Queue
-from cocotb.triggers import ClockCycles, RisingEdge, FallingEdge, with_timeout
+from cocotb.triggers import ClockCycles, RisingEdge, FallingEdge, with_timeout, First
 from elftools.elf.elffile import ELFFile
 from bazel_tools.tools.python.runfiles import runfiles
 
@@ -1369,3 +1369,120 @@ async def test_ddr_burst_pattern_repro(dut):
 
     assert dut.io_external_ports_fault.value == 0, "Program halted with fault!"
     dut._log.info("DDR Burst Pattern Reproduction Test Finished.")
+
+
+# =============================================================================
+# FAITHFUL SPI-FLASH SELF-LOAD TEST (added for CnnAccel self-boot).
+# The chip boots a ROM stub that programs the real SPI-flash controller to READ
+# the app from a modeled SPI flash, sets HDRX, and DMAs RXDATA -> ITCM, then jumps.
+# This is exactly the fpga rom_boot path -- runs here because cocotb/Verilator is
+# 2-state (the SPI CDC that VCS 4-state cannot simulate works fine).
+# =============================================================================
+_BOOT_STUB = bytes.fromhex("37030740930210402322530093021000232a53002328030093021000232853009303300097000000e78000009303000097000000e780000097000000e780000097000000e78000008322430093e282002322530037150020b70207409382c2002320550023220500b702000893820238232455002326050023280500232a0500232c0500232e0500370e05402324ae009302300023205e0083224e0093fe6200e38c0efe0f10000093020000678002008322030093f24200e39c02fe232473008322030093f21200e39c02fe8322c30067800000")      # SPI+DMA boot stub -> ROM @ 0x10000000
+_APP_FLASH = bytes.fromhex("735020b0735020b8732520b0f32520b817810100130101ff970101009381817e1302000013030000930300001304000093040000930500001306000093060000130700009307000013080000930800001309000093090000130a0000930a0000130b0000930b0000130c0000930c0000130d0000930d0000130e0000930e0000130f0000930f00001385018197050100938585fcef00c0261304003793040037637a940083220400e780020013044400e36a94fe970200009382021673905230b76200009382026073a0023097020100938242f337d5ad0b1305d50023a0a2001305000093050000970000009380c005e780000013090500ef0000181304003793040037630a94009384c4ff83a20400e7800200e31a94fe1305090097020100938242ee23a0a20063060500730010006f000001732520b0f32520b8730000086f000000b7060020b70704fc938717e023a0f600b707649c9387576023a2f600938706103707fd041307f72f23a0e700370733ce130757a023a2e6100f00f00f370706402324d7002326f700938706202328f700930707001307600023aae7001307100023a0e700138747008327070093f72700e38c07fe0f00f00fb707064083a78701371700202322f780130770fd638ee70037170020b7e7adde9387d7ea2320f780130000006ff0dfffb707002003a70720930770fde31ef7fc37170020b7670d609387d7002320f7801305000067800000730010006f000000034505001335150067800000930710002300f50067800000678000009707010083a787dd130770006346f70293963700138741813307d7002320a7002322b70093871700170701002328f7da13050000678000001305f0ff67800000130101ff23261100232291009707010083a7c7d89384f7ff63c40404232481002320210193973700138441813304f4001309f0ff6f0000019384f4ff130484ff638c2401832784ffe38807fe0325c4ffe78007006ff05ffe03248100032901009707010023ac07d28320c10083244100130101016780000073001000678000000000000000000000")     # cnn_chip_test .text -> SPI flash @ 0
+
+
+async def _rom_responder(device_if, image, base=0x10000000):
+    """Read-only ROM device serving the boot stub (32-bit words)."""
+    words = [int.from_bytes(image[i:i+4].ljust(4, b"\x00"), "little")
+             for i in range(0, len(image), 4)]
+    while True:
+        req = await device_if.device_get_request()
+        off = (int(req["address"]) - base) >> 2
+        data = words[off] if 0 <= off < len(words) else 0
+        is_read = (int(req["opcode"]) == 4)
+        await device_if.device_respond(
+            opcode=(1 if is_read else 0), param=0, size=int(req["size"]),
+            source=int(req["source"]), data=data, error=0)
+
+
+async def _spi_flash_slave(dut, image):
+    """Mode-0 SPI flash slave: CMD 0x03 READ + 24-bit addr, then stream image on MISO."""
+    csb  = dut.io_external_ports_spim_flash_csb
+    sclk = dut.io_external_ports_spim_flash_sclk
+    mosi = dut.io_external_ports_spim_flash_mosi
+    miso = dut.io_external_ports_spim_flash_miso
+    miso.value = 0
+    while True:
+        await FallingEdge(csb)                     # CS asserted
+        buf = []
+        for _ in range(4):                         # cmd(1) + addr(3), sampled on rising
+            b = 0
+            for _ in range(8):
+                await First(RisingEdge(sclk), RisingEdge(csb))
+                if csb.value == 1:
+                    break
+                b = ((b << 1) | int(mosi.value)) & 0xFF
+            buf.append(b)
+        addr = (buf[1] << 16) | (buf[2] << 8) | buf[3]
+        idx = addr
+        broke = False
+        while not broke:                           # stream data, drive on falling edge
+            byte = image[idx] if idx < len(image) else 0
+            idx += 1
+            for i in range(8):
+                await First(FallingEdge(sclk), RisingEdge(csb))
+                if csb.value == 1:
+                    broke = True
+                    break
+                miso.value = (byte >> (7 - i)) & 1
+
+
+@cocotb.test()
+async def test_cnn_selfload_via_spi_flash(dut):
+    """Chip self-loads CnnAccel firmware from SPI flash (rom_boot faithful path)."""
+    await setup_dut(dut)
+
+    # Host to program the boot CSRs.
+    host_if = TileLinkULInterface(
+        dut, host_if_name="io_external_hosts_test_host_32",
+        clock_name="io_async_ports_hosts_test_clock",
+        reset_name="io_async_ports_hosts_test_reset", width=32)
+    await host_if.init()
+
+    # Boot stub -> SRAM @ 0x20000000 (backdoor: its poll-loop fetches are internal, so
+    # the sim isn't throttled by a Python ROM responder). App -> SPI flash.
+    backdoor_load(0x20000000, np.frombuffer(_BOOT_STUB, dtype=np.uint8))
+    cocotb.start_soon(_spi_flash_slave(dut, _APP_FLASH))
+
+    # Drive the SPI PHY clock (slow -> naturally SPI-paces the DMA into ITCM).
+    cocotb.start_soon(Clock(dut.io_external_ports_spim_flash_clk_i, 10, "ns").start())
+
+    async def _csr(addr, data):
+        txn = create_a_channel_req(address=addr, data=data, mask=0xF, width=32)
+        await host_if.host_put(txn)
+        resp = await host_if.host_get_response()
+        assert resp["error"] == 0
+
+    await _csr(0x30004, 0x20000000)   # start PC = SRAM boot stub
+    await _csr(0x30000, 1)            # release clock gate
+    await ClockCycles(dut.io_clk_i, 1)
+    await _csr(0x30000, 0)            # release reset -> chip self-loads + runs
+
+    dut._log.info("Chip released; waiting for self-loaded app to halt...")
+    async def _rd(addr):
+        txn = create_a_channel_req(address=addr, mask=0xF, width=32, is_read=True)
+        await host_if.host_put(txn)
+        r = await host_if.host_get_response()
+        return int(r["data"])
+    # BOOT PROBE: watch the DMA copy the app into ITCM. XFER_REMAIN should count down
+    # to 0 (copy done -> stub jumps -> app runs -> mailbox). If it sticks non-zero, the
+    # DMA->ITCM write deadlocked (the rate hazard); if it hits 0 but the mailbox never
+    # updates, the app itself is the issue.
+    halted = False
+    for i in range(3000):                      # check every 500 cycles
+        await ClockCycles(dut.io_clk_i, 500)
+        if dut.io_external_ports_halted.value == 1:
+            halted = True
+            dut._log.info(f"App halted after ~{(i+1)*500} cycles")
+            break
+        if (i+1) % 20 == 0:                    # probe every 10k cycles (before ~100k kill)
+            rem = await _rd(0x40050010)        # DMA_XFER_REMAIN
+            sts = await _rd(0x40050004)        # DMA_STATUS (bit0 busy,1 done,2 error)
+            mb  = await _rd(0x20000800)        # cnn_chip_test mailbox
+            dut._log.info(f"[PROBE] ~{(i+1)*500:>7} cyc: DMA_REMAIN=0x{rem & 0xffffff:06x} "
+                          f"STATUS=0x{sts:x} halted={int(dut.io_external_ports_halted.value)} "
+                          f"MBOX=0x{mb:08x}")
+    assert halted, "Timeout: self-loaded app did not halt"
+    assert dut.io_external_ports_fault.value == 0, "App halted with fault!"
+    dut._log.info("SELF-LOAD PASS: chip booted CnnAccel firmware from SPI flash and halted cleanly.")

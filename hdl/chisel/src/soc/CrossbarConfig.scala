@@ -132,7 +132,7 @@ class CrossbarConfig(itcmSize: MemorySize, dtcmSize: MemorySize) {
       "cnn_accel" -> Seq("sram", "coralnpu_device", "ddr_mem"),
       "ispyocto_m1" -> Seq("sram", "ddr_mem", "coralnpu_device"),
       "ispyocto_m2" -> Seq("sram", "ddr_mem", "coralnpu_device"),
-      "autoboot" -> Seq("coralnpu_device")
+      "autoboot" -> Seq("coralnpu_device", "dma")
     )
     if (enableTestHarness) {
       baseConnections + ("test_host_32" -> Seq("rom", "sram", "uart0", "coralnpu_device", "ddr_ctrl", "ddr_mem", "spi_master", "gpio", "i2c_master", "dma", "cnn_accel", "spi_master_flash", "clint", "plic", "ispyocto_ctrl", "clk_table"))

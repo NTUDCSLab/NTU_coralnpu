@@ -13,6 +13,13 @@
 # =============================================================================
 set -euo pipefail
 
+# Strip the Cadence/Verdi libstdc++ (from cvsd.cshrc) that crashes the bazel
+# launcher with a CXXABI error; keep everything else.
+if [ -n "${LD_LIBRARY_PATH:-}" ]; then
+  export LD_LIBRARY_PATH="$(echo "$LD_LIBRARY_PATH" | tr ':' '\n' \
+    | grep -ivE 'cadence|innovus|verdi|spyglass' | paste -sd: -)"
+fi
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"     # custom_ip/ lives at the repo root
 cd "$REPO"

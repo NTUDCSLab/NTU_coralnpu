@@ -12,6 +12,13 @@
 # =============================================================================
 set -euo pipefail
 
+# Strip the Cadence/Verdi libstdc++ (from cvsd.cshrc) that crashes the bazel
+# launcher with a CXXABI error; keep everything else.
+if [ -n "${LD_LIBRARY_PATH:-}" ]; then
+  export LD_LIBRARY_PATH="$(echo "$LD_LIBRARY_PATH" | tr ':' '\n' \
+    | grep -ivE 'cadence|innovus|verdi|spyglass' | paste -sd: -)"
+fi
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 RTL="$HERE/../01_RTL"
 REPO="$(cd "$HERE/../.." && pwd)"
@@ -47,9 +54,15 @@ run_chip() {
   ./simv_chip +binary="$ELF" -l chip_run.log
 }
 
+run_boot() {
+  echo "=================== WHOLE-CHIP SELF-LOAD (AUTOBOOT -> DMA) ==================="
+  "$HERE/run_bootloader.sh"
+}
+
 case "${1:-both}" in
   unit) run_unit ;;
   chip) run_chip ;;
+  boot) run_boot ;;
   both) run_unit; run_chip ;;
-  *) echo "usage: $0 [unit|chip|both]"; exit 1 ;;
+  *) echo "usage: $0 [unit|chip|boot|both]"; exit 1 ;;
 esac

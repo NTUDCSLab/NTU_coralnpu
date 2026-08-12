@@ -391,6 +391,7 @@ CORALNPU_CHISEL_SUBSYSTEM_TESTCASES = [
     "test_ddr_burst_pattern_repro",
     "test_software_interrupt",
     "test_plic",
+    ("test_cnn_selfload_via_spi_flash", "large"),
 ]
 # END_TESTCASES_FOR_coralnpu_chisel_subsystem_cocotb
 
@@ -414,7 +415,7 @@ cocotb_test_suite(
     testcases_vname = "CORALNPU_CHISEL_SUBSYSTEM_TESTCASES",
     tests_kwargs = {
         "hdl_toplevel": "CoralNPUChiselSubsystemTestHarness",
-        "waves": True,
+        "waves": False,
         "seed": "42",
         "test_module": ["test_subsystem.py"],
         "deps": [
