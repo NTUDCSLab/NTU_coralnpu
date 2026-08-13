@@ -22,7 +22,10 @@ jobs:
     steps:
       - name: clone verilator
         run: |
-          git clone https://github.com/verilator/verilator
+          # Pin to a released tag (matches third_party/coralnpu_mpact/WORKSPACE's
+          # svdpi.h @ v5.028).  Cloning master is unpinned and drifts -> ci-install.bash
+          # breaks with no change on our side.
+          git clone https://github.com/verilator/verilator -b v5.028
       - name: install dependencies
         run: ${{ github.workspace }}/verilator/ci/ci-install.bash
       - name:
